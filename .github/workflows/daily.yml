@@ -1,0 +1,40 @@
+name: daily
+
+on:
+  schedule:
+    # 18:45 IST — after the NSE close (15:30) and after AMFI publishes the
+    # evening NAV dump. Cron is UTC.
+    - cron: "15 13 * * 1-5"
+  workflow_dispatch:
+
+# The job commits the SQLite state file back, so runs must not overlap.
+concurrency:
+  group: daily
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: python main.py --stage all
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FUND_SCHEME_CODES: ${{ vars.FUND_SCHEME_CODES }}
+      # Runs even when a stage failed: whatever did land (bars, signals, the run
+      # log itself) is exactly what you want to inspect afterwards.
+      - if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add -f output/nse.db
+          git diff --quiet --cached || git commit -m "state: $(date -u +%Y-%m-%d)"
+          git push

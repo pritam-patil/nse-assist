@@ -1,0 +1,13 @@
+.env
+__pycache__/
+*.pyc
+venv/
+cache/
+
+# Generated reports stay out of git, but the SQLite state file is committed back
+# by the scheduled workflows so each run inherits price history, open signals and
+# the paper-trade ledger from the previous one.
+# Note: this must be `output/*`, not `output/` — git will not descend into an
+# excluded directory, so a negation inside one never takes effect.
+output/*
+!output/nse.db
