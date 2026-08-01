@@ -10,6 +10,8 @@ the stop is taken. Without intraday data there is no way to know which came firs
 and the optimistic assumption is how a backtest ends up flattering a rule.
 """
 
+from datetime import date
+
 from src import features, risk_config, signals, universe
 from src.db import get_connection, init_db
 
@@ -111,6 +113,36 @@ def summarize(trades):
     }
 
 
+def _print_survivorship_warning(conn, tested):
+    """Every backtest here is run on TODAY's index membership.
+
+    src/universe.py is a snapshot of the current NIFTY 100, so a name that was in
+    the index three years ago and was demoted after a bad run is simply absent from
+    the test, while a name promoted *because* it did well is present for its whole
+    history. The sample is therefore tilted toward companies that did well enough to
+    still be in the index — results read slightly better than the same rules would
+    have done live.
+
+    Mild here rather than severe: NIFTY 100 turnover is roughly a handful of names
+    per semi-annual review, and none of these are delisted-to-zero cases. It is
+    still a systematic upward tilt, not noise, so it is printed with every result
+    rather than left in a README nobody rereads.
+    """
+    span = conn.execute("SELECT MIN(date), MAX(date) FROM prices").fetchone()
+    years = 0
+    if span and span[0] and span[1]:
+        years = (date.fromisoformat(span[1]) - date.fromisoformat(span[0])).days / 365.25
+
+    print(
+        f"[backtest] NOTE: mild survivorship bias — these {tested} symbol(s) are today's "
+        f"NIFTY 100, backtested over ~{years:.1f}y of history."
+    )
+    print(
+        "[backtest]       Names demoted from the index after poor performance are absent, "
+        "so results read slightly better than live trading would have."
+    )
+
+
 def run(dry_run=False, symbols=None, **kwargs):
     """Backtests each rule separately, then the portfolio as a whole. Read-only:
     nothing is written to signals or paper_trades."""
@@ -131,6 +163,7 @@ def run(dry_run=False, symbols=None, **kwargs):
             tested += 1
 
         print(f"[backtest] {tested} symbol(s), risk: {risk_config.as_dict()}")
+        _print_survivorship_warning(conn, tested)
         header = f"{'rule':<20} {'trades':>7} {'win%':>7} {'total':>12} {'expectancy':>12}"
         print(f"[backtest] {header}")
         for rule in list(signals.RULES) + ["ALL"]:

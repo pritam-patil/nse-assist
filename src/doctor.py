@@ -183,10 +183,35 @@ def check_source_integrity():
         if phantom:
             raise RuntimeError(f"{phantom} phantom bar(s) stored — run --stage ingest to purge")
 
+        # A price cannot move because the feed changed. A large jump exactly at a
+        # source seam is therefore an artefact by definition — the two sources
+        # disagree on the adjustment basis — and unlike a big real move there is no
+        # judgement call about it.
+        seam_jumps = []
+        rows = conn.execute(
+            "SELECT symbol, date, close, source FROM prices ORDER BY symbol, date"
+        ).fetchall()
+        previous = {}
+        for row in rows:
+            prior = previous.get(row["symbol"])
+            if prior and prior["close"] and prior["source"] != row["source"]:
+                change = (row["close"] - prior["close"]) / prior["close"]
+                if abs(change) >= 0.25:
+                    seam_jumps.append((row["symbol"], row["date"], change))
+            previous[row["symbol"]] = row
+
         counts = dict(conn.execute("SELECT source, COUNT(*) FROM prices GROUP BY source").fetchall())
         total = sum(counts.values()) or 1
         share = ", ".join(f"{k} {v * 100 // total}%" for k, v in sorted(counts.items()))
-        return f"no blended dates, no phantom bars ({share})"
+
+        if seam_jumps:
+            worst = sorted(seam_jumps, key=lambda j: -abs(j[2]))[:3]
+            detail = ", ".join(f"{s} {d} {c:+.0%}" for s, d, c in worst)
+            raise RuntimeError(
+                f"{len(seam_jumps)} price jump(s) at a source seam — adjusted and raw bars "
+                f"in one series: {detail}. See --stage verify-data"
+            )
+        return f"no blended dates, no phantom bars, no seam jumps ({share})"
     finally:
         conn.close()
 

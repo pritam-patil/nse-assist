@@ -4,7 +4,8 @@ import argparse
 import sys
 import traceback
 
-from src import backtest, deliver, doctor, features, funds, ingest, journal, runlog, signals
+from src import backfill, backtest, deliver, doctor, features, funds, ingest, journal, runlog
+from src import signals, verify_data
 from src import db
 
 STAGES = {
@@ -13,6 +14,8 @@ STAGES = {
     "signals": signals,
     "scan": signals,  # alias: "run the scan" is what the signals stage does
     "backtest": backtest,
+    "backfill": backfill,
+    "verify-data": verify_data,
     "journal": journal,
     "funds": funds,
     "deliver": deliver,
@@ -24,8 +27,9 @@ STAGES = {
 #
 # 'backtest' is deliberately excluded: it replays years of history across the
 # whole universe, which takes minutes, and it answers a research question rather
-# than a daily one. Invoke it explicitly (--stage backtest). 'doctor' is likewise
-# a health check, not a pipeline step.
+# than a daily one. Invoke it explicitly (--stage backtest). 'doctor',
+# 'verify-data' and 'backfill' are likewise one-off tools, not pipeline steps —
+# backfill in particular re-downloads three years and would be absurd to run daily.
 ALL_STAGES = (ingest, features, signals, journal, funds, deliver)
 
 
