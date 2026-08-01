@@ -47,6 +47,12 @@ def parse_args():
         help="Run without writing to the database or sending to Telegram.",
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Backfill only: re-adjust every symbol regardless of what is stored. "
+        "Needed after changing which source outranks which.",
+    )
+    parser.add_argument(
         "--backfill",
         action="store_true",
         help="Ingest only: re-request the full lookback for every symbol instead of "
@@ -65,7 +71,7 @@ def main():
         name = stage.__name__.split(".")[-1]
         runlog.log(name, "start")
         try:
-            stage.run(dry_run=args.dry_run, backfill=args.backfill)
+            stage.run(dry_run=args.dry_run, backfill=args.backfill, force=args.force)
             runlog.log(name, "ok")
         except Exception as exc:
             # One stage failing must not block the others: a dead price feed should

@@ -118,14 +118,29 @@ rows a day — as long as `FUND_SCHEME_CODES` stays narrow.
   1.0 and the pullback RSI band at 40/60 because the textbook values (1.2, and
   30/70) suppressed nearly every signal over ~800 sessions of testing. Re-measure
   with `--stage backtest` before moving them.
-- **Two price sources, never blended within a date.** NSE's UDiFF bhavcopy is
-  primary — the exchange's own record, one zipped CSV per session covering every
-  symbol. yfinance is the fallback for a blocked IP, a format change, or a backfill
-  too large to fetch a day at a time. `store_bars()` enforces precedence in the
-  SQL conflict clause: bhavcopy overwrites a day the fallback filled, and the
-  fallback never overwrites bhavcopy. Because a filled gap would otherwise move the
-  watermark past itself and never be revisited, recent fallback dates are
-  deliberately re-offered to bhavcopy each run.
+- **Split-adjusted history outranks the exchange's own file.** `ingest.SOURCE_RANK`
+  is `yfinance-adj (3) > bhavcopy (2) > yfinance (1)`, enforced in the SQL conflict
+  clause so a concurrent writer cannot lose the rule. That looks backwards for a
+  second — bhavcopy is what actually traded — but this table feeds indicators, not
+  settlement, and every indicator reads a window of past closes. A raw series is
+  correct only at its right edge: the moment a symbol splits, its whole history is
+  wrong by the split factor. `--stage backfill` owns the history, `--stage ingest`
+  owns the right edge, and adjustment factors are 1.0 until a corporate action, so
+  the raw bar written each evening is correct as written.
+- **After a split, a symbol needs re-adjusting and date coverage cannot tell you.**
+  It still has every date it needs; only the basis went stale, and the sole symptom
+  is a cliff where adjusted history meets the raw tail.
+  `backfill.symbols_needing_readjustment()` finds those and re-fetches them, so an
+  ordinary run self-repairs. `--force` re-adjusts everything, which is what a change
+  to the ranking itself requires.
+- **auto_adjust is not trustworthy on its own.** Verified against bhavcopy: it fixes
+  splits correctly (KOTAKBANK 1:5, LICI 1:2) but TRENT came back with the factor
+  applied only from 2026-01-01 while the action was 2026-06-04, leaving a 33% cliff
+  *inside* the adjusted series, and VEDL's demerger came back with no adjustment at
+  all (adjusted/raw ratio exactly 1.0 across a 65% drop). Demergers are not splits,
+  so the second is arguably correct — the value really did leave — but both are
+  discontinuities that break a lookback window. `--stage verify-data` is the only
+  thing that catches either.
 - **Yahoo invents bars on NSE holidays.** Zero volume, open=high=low=close, previous
   close carried forward. There were 518 of them in the first backfill. Left in, they
   flatten RSI and drag the 20-day average volume down, so ingest rejects them on

@@ -11,10 +11,16 @@ rules then fire on an artefact. Adjusted history is the only version where a
 backtest is measuring the strategy rather than the corporate actions.
 
 Adjustment is backward-looking: Yahoo scales *past* bars so the most recent one is
-the real traded price. The series is internally consistent, but it is a different
-basis from ingest.py's raw bhavcopy bars. See verify_data.py — the mixed-basis
-check exists precisely because these two stages disagree by construction, and the
-disagreement grows each time a universe member splits.
+the real traded price. This source therefore outranks raw bhavcopy in
+ingest.SOURCE_RANK — the table feeds indicators rather than settlement, and only an
+adjusted series makes a lookback window mean anything.
+
+The corollary is that this stage owns the history and ingest.py owns the right
+edge. Adjustment factors are 1.0 until a corporate action, so the raw bars daily
+ingest writes are correct as written; they go stale only when a universe member
+splits, at which point the adjusted history and the raw tail meet at a cliff.
+symbols_needing_readjustment() finds exactly those symbols, and re-running this
+stage repairs them.
 
 Resumable per symbol. A symbol whose stored history already reaches back far
 enough is skipped, so a run interrupted at symbol 60 continues from there instead
@@ -27,11 +33,13 @@ from datetime import date, datetime, timedelta, timezone
 
 from src import universe
 from src.db import get_connection, init_db
-from src.ingest import SOURCE_BHAVCOPY, is_phantom, store_bars
+from src.ingest import SOURCE_ADJUSTED, is_phantom, store_bars
 
-# Distinct from ingest.py's SOURCE_YFINANCE: same provider, different adjustment
-# basis, and conflating them would hide exactly the problem verify-data looks for.
-SOURCE_ADJUSTED = "yfinance-adj"
+# Re-exported for callers that think of it as this module's output. The constant
+# lives in ingest.py because store_bars() has to rank it. Distinct from
+# SOURCE_YFINANCE: same provider, different adjustment basis, and conflating them
+# would hide exactly the problem verify-data looks for.
+__all__ = ["SOURCE_ADJUSTED", "run"]
 
 BACKFILL_YEARS = 3
 
@@ -46,9 +54,22 @@ PAUSE_BETWEEN_BATCHES_SECONDS = 2.0
 COVERAGE_SLACK_DAYS = 20
 
 
-def target_start(today=None):
+def target_start(conn=None, today=None):
+    """Start of the window to adjust: BACKFILL_YEARS back, extended to cover any
+    older bars already stored.
+
+    The extension matters. Anything left outside the window keeps whatever basis it
+    was written with, which puts an unadjusted stretch on the far side of a seam —
+    the exact defect this stage exists to remove, just relocated. Covering the whole
+    stored span means one basis end to end.
+    """
     today = today or datetime.now(timezone.utc).date()
-    return today - timedelta(days=365 * BACKFILL_YEARS)
+    start = today - timedelta(days=365 * BACKFILL_YEARS)
+    if conn is not None:
+        earliest = conn.execute("SELECT MIN(date) FROM prices").fetchone()[0]
+        if earliest:
+            start = min(start, date.fromisoformat(earliest))
+    return start
 
 
 def coverage(conn, symbols):
@@ -78,6 +99,39 @@ def pending_symbols(conn, symbols, start, end):
         elif span[0] > deadline or span[1] < end.isoformat():
             pending.append(symbol)
     return pending
+
+
+def symbols_needing_readjustment(conn, symbols, threshold=0.25):
+    """Symbols whose stored series contains a corporate-action-shaped cliff.
+
+    Date coverage alone cannot answer "is this symbol's history still correct?".
+    After a split, ingest.py keeps writing raw bhavcopy bars while the adjusted
+    history sits on the old basis, and the two meet at a cliff. The symbol has every
+    date it needs, so a coverage check calls it done — it is the *basis* that went
+    stale, and the cliff is the only visible symptom.
+
+    Detected as a close-to-close move past `threshold` where at least one side is a
+    raw source. A move that large entirely inside adjusted data is a real event
+    (ADANIENT in February 2023), not an artefact, and re-fetching would not change it.
+    """
+    rows = conn.execute(
+        f"SELECT symbol, date, close, source FROM prices "
+        f"WHERE symbol IN ({','.join('?' * len(symbols))}) ORDER BY symbol, date",
+        list(symbols),
+    ).fetchall()
+
+    flagged, previous = {}, {}
+    for row in rows:
+        prior = previous.get(row["symbol"])
+        if prior and prior["close"]:
+            change = (row["close"] - prior["close"]) / prior["close"]
+            raw_involved = SOURCE_ADJUSTED not in (prior["source"], row["source"]) or (
+                prior["source"] != row["source"]
+            )
+            if abs(change) >= threshold and raw_involved:
+                flagged.setdefault(row["symbol"], (row["date"], change))
+        previous[row["symbol"]] = row
+    return flagged
 
 
 def fetch_adjusted(symbols, start, end):
@@ -138,20 +192,38 @@ def _round(value):
     return None if value != value else round(value, 2)
 
 
-def run(dry_run=False, symbols=None, **kwargs):
+def run(dry_run=False, symbols=None, force=False, **kwargs):
+    """Re-fetches adjusted history for symbols that need it.
+
+    `force` re-adjusts the whole universe regardless of what is stored — needed
+    after a change to which source outranks which, since nothing about the stored
+    dates reflects that.
+    """
     symbols = tuple(symbols or universe.UNIVERSE)
     today = datetime.now(timezone.utc).date()
-    start = target_start(today)
 
     conn = get_connection()
     try:
         init_db(conn)
-        pending = pending_symbols(conn, symbols, start, today)
-        done = len(symbols) - len(pending)
-
+        start = target_start(conn, today)
         print(f"[backfill] {BACKFILL_YEARS}y window {start} to {today}, adjusted prices")
-        if done:
-            print(f"[backfill] {done} symbol(s) already cover the window — resuming with {len(pending)}")
+
+        if force:
+            pending = list(symbols)
+            print(f"[backfill] force: re-adjusting all {len(pending)} symbol(s)")
+        else:
+            pending = pending_symbols(conn, symbols, start, today)
+            done = len(symbols) - len(pending)
+            if done:
+                print(f"[backfill] {done} symbol(s) already cover the window — resuming with {len(pending)}")
+
+            # Covered but stale in basis: a split has put a cliff in the series.
+            stale = symbols_needing_readjustment(conn, symbols)
+            extra = [s for s in stale if s not in set(pending)]
+            if extra:
+                detail = ", ".join(f"{s} ({stale[s][0]} {stale[s][1]:+.0%})" for s in extra[:4])
+                print(f"[backfill] {len(extra)} symbol(s) need re-adjustment after a corporate action: {detail}")
+                pending += extra
         if not pending:
             print("[backfill] nothing to do")
             return 0
@@ -191,16 +263,14 @@ def run(dry_run=False, symbols=None, **kwargs):
         by_source = dict(conn.execute("SELECT source, COUNT(*) FROM prices GROUP BY source").fetchall())
         print(f"[backfill] {stored:,} bar(s) written; table by source: {by_source}")
 
-        # Not a silent success: bhavcopy outranks this source, so dates it already
-        # owns keep raw prices and this stage's writes to them are discarded.
-        kept = conn.execute(
-            "SELECT COUNT(DISTINCT date) FROM prices WHERE source = ?", (SOURCE_BHAVCOPY,)
+        remaining = conn.execute(
+            "SELECT COUNT(DISTINCT date) FROM prices WHERE source != ?", (SOURCE_ADJUSTED,)
         ).fetchone()[0]
-        if kept:
-            print(
-                f"[backfill] {kept} date(s) remain on {SOURCE_BHAVCOPY} (raw, unadjusted) — "
-                f"it outranks this source. Run --stage verify-data for the basis check."
-            )
+        if remaining:
+            # Expected for dates after the window's end — daily ingest writes those
+            # raw, and they are correct until the symbol's next corporate action.
+            print(f"[backfill] {remaining} date(s) still on a raw source (newer than the window)")
+        print("[backfill] run --stage verify-data to confirm one basis end to end")
 
         if failures:
             print(f"[backfill] {len(failures)} batch(es) failed: {'; '.join(failures[:3])}")

@@ -40,6 +40,37 @@ from src.db import get_connection, init_db
 
 SOURCE_BHAVCOPY = "bhavcopy"
 SOURCE_YFINANCE = "yfinance"
+# Defined here rather than in backfill.py so store_bars() can rank it without
+# importing the module that writes it.
+SOURCE_ADJUSTED = "yfinance-adj"
+
+# Which source wins when two of them have bars for the same (symbol, date).
+#
+# Split-adjusted history outranks everything, including the exchange's own file.
+# That looks backwards for about a second — bhavcopy is the authoritative record of
+# what actually traded — but the table feeds indicators, not settlement, and every
+# indicator reads a window of past closes. A raw series is only correct at its right
+# edge; the moment a symbol splits, its entire history is wrong by the split factor
+# and the 200-day average is meaningless. Adjusted history is the only basis on
+# which a lookback window means anything.
+#
+# Raw bhavcopy still outranks unadjusted yfinance: same basis, better provenance.
+#
+# The consequence to keep in mind: adjustment factors are 1.0 until a corporate
+# action happens, so daily bhavcopy bars are correct as written and only go stale
+# when a universe member splits. That is what --stage verify-data detects and what
+# a re-run of --stage backfill repairs.
+SOURCE_RANK = {
+    SOURCE_YFINANCE: 1,
+    SOURCE_BHAVCOPY: 2,
+    SOURCE_ADJUSTED: 3,
+}
+
+# Inlined into the conflict clause below. An unknown source ranks 0, so anything
+# beats it — a stray label cannot pin a row in place.
+_RANK_CASE = "CASE prices.source " + " ".join(
+    f"WHEN '{name}' THEN {rank}" for name, rank in SOURCE_RANK.items()
+) + " ELSE 0 END"
 
 NSE_HOME = "https://www.nseindia.com"
 NSE_REFERER = "https://www.nseindia.com/all-reports"
@@ -288,22 +319,25 @@ def _f(value, round_to=None):
 
 
 def store_bars(conn, rows):
-    """Upserts (symbol, bar, source) tuples under the source-precedence rule.
+    """Upserts (symbol, bar, source) tuples under SOURCE_RANK precedence.
 
-    A date is never a blend of two feeds. Bhavcopy is the exchange's own record, so
-    it overwrites whatever is there; yfinance only fills a date bhavcopy has not
-    claimed. Expressed in the conflict clause rather than in Python so that a
-    concurrent writer cannot interleave a read-then-write and lose the rule.
+    A write lands only when its source ranks at or above the one already stored, so
+    a lower-ranked feed can fill a gap but never degrade a bar. Equal rank is allowed
+    on purpose: re-running --stage backfill has to be able to replace adjusted bars
+    with freshly adjusted ones, which is the whole repair path after a split.
+
+    Expressed in the conflict clause rather than in Python so a concurrent writer
+    cannot interleave a read-then-write and lose the rule.
     """
     conn.executemany(
-        """INSERT INTO prices (symbol, date, open, high, low, close, volume, source)
-           VALUES (:symbol, :date, :open, :high, :low, :close, :volume, :source)
-           ON CONFLICT (symbol, date) DO UPDATE SET
-               open = excluded.open, high = excluded.high, low = excluded.low,
-               close = excluded.close, volume = excluded.volume, source = excluded.source
-           WHERE excluded.source = :bhavcopy OR prices.source != :bhavcopy""",
+        f"""INSERT INTO prices (symbol, date, open, high, low, close, volume, source)
+            VALUES (:symbol, :date, :open, :high, :low, :close, :volume, :source)
+            ON CONFLICT (symbol, date) DO UPDATE SET
+                open = excluded.open, high = excluded.high, low = excluded.low,
+                close = excluded.close, volume = excluded.volume, source = excluded.source
+            WHERE :rank >= ({_RANK_CASE})""",
         [
-            {**bar, "symbol": symbol, "source": source, "bhavcopy": SOURCE_BHAVCOPY}
+            {**bar, "symbol": symbol, "source": source, "rank": SOURCE_RANK.get(source, 0)}
             for symbol, bar, source in rows
         ],
     )
