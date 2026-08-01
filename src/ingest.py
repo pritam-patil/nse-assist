@@ -393,12 +393,22 @@ def run(dry_run=False, symbols=None, backfill=False, **kwargs):
             else today - timedelta(days=config.INGEST_LOOKBACK_DAYS)
         )
 
-        try:
-            sessions = calendar.trading_days_between(start, today)
-        except RuntimeError as exc:
-            # The calendar module refuses dates outside the year it covers rather
-            # than guessing. Surface that as the actionable message it is.
-            raise RuntimeError(f"holiday calendar does not cover this range: {exc}") from exc
+        # Bhavcopy can only be fetched for dates the calendar can classify — asking
+        # for a session on a day it cannot rule on would mean guessing whether the
+        # exchange was open. Older history stays on whatever source already filled
+        # it; each date is still wholly one source, so the no-blending rule holds.
+        clamped = max(start, calendar.COVERAGE_START)
+        if clamped > start:
+            print(
+                f"[ingest] range starts {start}, but the holiday calendar only covers "
+                f"{calendar.COVERAGE_START} onward — fetching from {clamped}; earlier "
+                f"history keeps its existing source"
+            )
+        start = clamped
+        if start > today:
+            print("[ingest] nothing to fetch inside the calendar's coverage")
+            return 0
+        sessions = calendar.trading_days_between(start, min(today, calendar.COVERAGE_END))
 
         # Dates the fallback filled are re-offered to bhavcopy so the authoritative
         # source can replace them; store_bars() enforces which write wins.
@@ -421,9 +431,14 @@ def run(dry_run=False, symbols=None, backfill=False, **kwargs):
         stored = 0
         fallback_days = []
 
-        # A long backfill goes straight to the batched fallback: fetching 300+ days
-        # one file at a time from NSE is neither fast nor polite.
-        if len(sessions) > BHAVCOPY_MAX_DAYS:
+        # An automatic run with a long gap goes straight to the batched fallback:
+        # fetching 300+ files one at a time from NSE is neither fast nor polite, and
+        # nothing chose it deliberately.
+        #
+        # An explicit --backfill is different — that IS the deliberate choice, and its
+        # whole purpose is to replace fallback history with the exchange's own record.
+        # Routing it to yfinance would make the flag a no-op against its own name.
+        if not backfill and len(sessions) > BHAVCOPY_MAX_DAYS:
             print(
                 f"[ingest] {len(sessions)} sessions exceeds the {BHAVCOPY_MAX_DAYS}-day "
                 f"per-day limit — using yfinance for the bulk, then bhavcopy for the "

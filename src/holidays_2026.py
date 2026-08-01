@@ -22,6 +22,16 @@ from datetime import date
 
 YEAR = 2026
 
+# The span this file can answer for. Callers that walk a date range clamp to it
+# rather than tripping assert_covers() — a 4-year backfill is legitimate, it just
+# cannot use a one-year calendar for the part that falls outside.
+COVERAGE_START = date(YEAR, 1, 1)
+COVERAGE_END = date(YEAR, 12, 31)
+
+
+def covers(day):
+    return COVERAGE_START <= day <= COVERAGE_END
+
 # (ISO date, NSE's own description) — kept as published so a diff against the
 # source page is a straight comparison.
 TRADING_HOLIDAYS = (
