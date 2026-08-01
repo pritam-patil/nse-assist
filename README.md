@@ -14,7 +14,7 @@ AMFI NAV dump, and the Telegram Bot API. No API keys beyond the Telegram bot.
 ## Stages
 
 ```
-ingest    daily OHLCV for the universe             -> prices
+ingest    NSE bhavcopy -> yfinance fallback         -> prices
 features  SMA / RSI / ATR / relative volume        -> (computed, never stored)
 signals   rules -> dated, sized entries            -> signals
 journal   fills, exits, daily limits               -> paper_trades
@@ -68,6 +68,10 @@ up as a reviewable diff instead of an invisible environment difference:
 
 - **`src/universe.py`** — the NIFTY 100 constituents. Fetching them would mean an
   index reconstitution silently changing what last night's scan looked at.
+- **`src/holidays_2026.py`** — NSE's published trading calendar. Ingest uses it to
+  decide whether a date had a session at all, and that answer must not change
+  because an API was briefly unreachable. It covers 2026 only and *raises* outside
+  that year rather than defaulting to "open".
 - **`src/risk_config.py`** — `capital_per_trade`, `max_daily_loss`,
   `daily_profit_target` and the sizing parameters derived from them. A backtest can
   then be re-run against the exact limits that were live at the time.
@@ -114,6 +118,23 @@ rows a day — as long as `FUND_SCHEME_CODES` stays narrow.
   1.0 and the pullback RSI band at 40/60 because the textbook values (1.2, and
   30/70) suppressed nearly every signal over ~800 sessions of testing. Re-measure
   with `--stage backtest` before moving them.
+- **Two price sources, never blended within a date.** NSE's UDiFF bhavcopy is
+  primary — the exchange's own record, one zipped CSV per session covering every
+  symbol. yfinance is the fallback for a blocked IP, a format change, or a backfill
+  too large to fetch a day at a time. `store_bars()` enforces precedence in the
+  SQL conflict clause: bhavcopy overwrites a day the fallback filled, and the
+  fallback never overwrites bhavcopy. Because a filled gap would otherwise move the
+  watermark past itself and never be revisited, recent fallback dates are
+  deliberately re-offered to bhavcopy each run.
+- **Yahoo invents bars on NSE holidays.** Zero volume, open=high=low=close, previous
+  close carried forward. There were 518 of them in the first backfill. Left in, they
+  flatten RSI and drag the 20-day average volume down, so ingest rejects them on
+  arrival and purges any that are already stored. `--stage doctor` fails if either
+  invariant breaks.
+- **yfinance adjusts prices by default.** `auto_adjust` defaults to `True`, which
+  returns split- and dividend-adjusted values that silently disagree with
+  bhavcopy's raw traded prices. It is explicitly set to `False`, and its float32
+  widening (1307.800048828125 for a printed 1307.80) is rounded away.
 - **Corporate actions break symbols, not the feed.** Three NIFTY 100 tickers were
   already stale when this was written — Tata Motors demerged into TMPV and TMCV,
   United Spirits trades as UNITDSPR, and LTIM no longer resolves at all. When

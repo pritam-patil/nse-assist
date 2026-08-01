@@ -108,17 +108,87 @@ def check_telegram():
     return f"bot @{response.json()['result'].get('username')}"
 
 
-def check_price_feed():
-    """One real symbol against the live feed — proves reachability and that the
-    response still has the shape ingest.py parses."""
-    from src.ingest import fetch_bars
+def check_calendar():
+    from src import holidays_2026 as calendar
+
+    return calendar.assert_consistent()
+
+
+def _last_session():
     from datetime import date, timedelta
 
+    from src import holidays_2026 as calendar
+
+    day = date.today()
+    for _ in range(14):
+        if calendar.is_trading_day(day):
+            return day
+        day -= timedelta(days=1)
+    raise RuntimeError("no trading day found in the last 14 days")
+
+
+def check_bhavcopy():
+    """The primary source, end to end: cookie prime, download, unzip, parse.
+
+    Deliberately a real fetch rather than a HEAD — NSE's bot detection answers 200
+    with an HTML block page, so only parsing proves the pipeline actually works.
+    """
+    from src.ingest import fetch_bhavcopy
+
+    day = _last_session()
+    bars = fetch_bhavcopy(day)
+    covered = sum(1 for s in universe.UNIVERSE if s in bars)
+    return f"{day}: {len(bars):,} equity bars, {covered}/{len(universe.UNIVERSE)} of the universe"
+
+
+def check_fallback():
+    """yfinance reachability, and that auto_adjust is being suppressed.
+
+    An adjusted series would silently disagree with bhavcopy's raw traded prices, so
+    this checks the values rather than just the call.
+    """
+    from src.ingest import fetch_yfinance
+
+    day = _last_session()
     symbol = universe.UNIVERSE[0]
-    bars = fetch_bars(symbol, date.today() - timedelta(days=10))
+    series = fetch_yfinance([symbol], day, day)
+    bars = series.get(symbol)
     if not bars:
-        raise RuntimeError(f"{symbol}: no bars in the last 10 days")
-    return f"{symbol} latest {bars[-1]['date']} close {bars[-1]['close']:.2f}"
+        raise RuntimeError(f"{symbol}: no bars returned for {day}")
+    return f"{symbol} {bars[-1]['date']} close {bars[-1]['close']:.2f}"
+
+
+def check_source_integrity():
+    """Two invariants the ingest stage is supposed to maintain.
+
+    A date carrying more than one source means the two feeds have been blended into
+    one day's bars — the exact thing the precedence rule exists to prevent. Phantom
+    bars are Yahoo's zero-volume holiday placeholders, which flatten RSI and drag the
+    20-day average volume down wherever they survive.
+    """
+    conn = get_connection()
+    try:
+        init_db(conn)
+        mixed = conn.execute(
+            "SELECT date, GROUP_CONCAT(DISTINCT source) AS sources FROM prices "
+            "GROUP BY date HAVING COUNT(DISTINCT source) > 1 ORDER BY date DESC LIMIT 5"
+        ).fetchall()
+        if mixed:
+            detail = ", ".join(f"{r['date']} ({r['sources']})" for r in mixed)
+            raise RuntimeError(f"{len(mixed)}+ date(s) blend sources: {detail}")
+
+        phantom = conn.execute(
+            "SELECT COUNT(*) FROM prices WHERE volume = 0 AND open = high AND high = low AND low = close"
+        ).fetchone()[0]
+        if phantom:
+            raise RuntimeError(f"{phantom} phantom bar(s) stored — run --stage ingest to purge")
+
+        counts = dict(conn.execute("SELECT source, COUNT(*) FROM prices GROUP BY source").fetchall())
+        total = sum(counts.values()) or 1
+        share = ", ".join(f"{k} {v * 100 // total}%" for k, v in sorted(counts.items()))
+        return f"no blended dates, no phantom bars ({share})"
+    finally:
+        conn.close()
 
 
 def check_amfi():
@@ -137,7 +207,10 @@ def run(dry_run=False, **kwargs):
         _check("universe", check_universe),
         _check("risk", check_risk),
         _check("sizing", check_sizing_coverage),
-        _check("price-feed", check_price_feed),
+        _check("calendar", check_calendar),
+        _check("bhavcopy", check_bhavcopy),
+        _check("fallback", check_fallback),
+        _check("integrity", check_source_integrity),
         _check("amfi", check_amfi),
         _check("telegram", check_telegram) if config.TELEGRAM_BOT_TOKEN else _skip("telegram", "no token"),
     ]
