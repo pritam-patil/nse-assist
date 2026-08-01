@@ -106,9 +106,28 @@ def levels(ind, direction):
     return {"entry": entry, "stop": stop, "target": target, "size": size}
 
 
+def has_discontinuity(ind):
+    """True when the indicator window spans a price cliff.
+
+    An unadjusted split or a demerger leaves a step in the series that no average
+    survives: the 200-day mean sits between two price regimes that never coexisted,
+    the ATR reads a range no session actually traded, and the rules then fire on the
+    artefact. Verified cases at the time of writing are TRENT (yfinance applied the
+    split factor from the wrong date) and VEDL (a demerger it did not adjust at all).
+
+    Excluding the symbol is the honest response — the indicators cannot be computed
+    from this data, so there is no signal to have an opinion about. It lifts by
+    itself once the cliff ages out of the lookback window.
+    """
+    return bool(ind) and (ind.get("max_jump") or 0) >= features.DISCONTINUITY_THRESHOLD
+
+
 def evaluate(ind):
     """Every rule that fires for one symbol's indicators, as (rule, direction) pairs."""
     if ind is None:
+        return []
+    # Before any rule runs: a corrupted window cannot produce a trustworthy signal.
+    if has_discontinuity(ind):
         return []
     # Conviction filter: a signal on well-below-average volume is usually drift.
     if ind["rel_volume"] is not None and ind["rel_volume"] < MIN_REL_VOLUME:
@@ -134,11 +153,16 @@ def run(dry_run=False, symbols=None, **kwargs):
         created = []
         skipped_for_history = 0
         skipped_for_size = []
+        excluded = []
 
         for symbol in symbols:
             ind = features.compute_for(conn, symbol)
             if ind is None:
                 skipped_for_history += 1
+                continue
+
+            if has_discontinuity(ind):
+                excluded.append((symbol, ind["max_jump"], ind["max_jump_date"]))
                 continue
 
             for rule, direction in evaluate(ind):
@@ -179,6 +203,15 @@ def run(dry_run=False, symbols=None, **kwargs):
             print(f"[signals]   {symbol:<12} {rule:<18} {direction:<5} entry {entry:>9.2f} x{size}")
         if skipped_for_history:
             print(f"[signals] {skipped_for_history} symbol(s) skipped for thin history")
+        if excluded:
+            print(
+                f"[signals] {len(excluded)} symbol(s) excluded — price discontinuity inside "
+                f"the indicator window (unadjusted split or demerger):"
+            )
+            for symbol, jump, when in sorted(excluded):
+                # Magnitude only: max_jump() is absolute, so a signed format would
+                # print "+65%" for what was a 65% drop.
+                print(f"[signals]   {symbol:<12} {jump:.0%} move on {when}")
         if skipped_for_size:
             names = ", ".join(sorted(set(skipped_for_size)))
             print(
