@@ -909,6 +909,39 @@ Replace `src/holidays_2026.py` with the list from
 `https://www.nseindia.com/api/holiday-master?type=trading`, update `YEAR`, and run
 `--stage doctor`.
 
+### `doctor: discontinuity FAIL — N unreviewed discontinuity(ies)`
+
+A within-basis price cliff that is not on the acknowledgement list. **Nothing in
+the data distinguishes a real crash from a broken provider adjustment** — both are
+a large close-to-close gap with the same source on either side. Only a human
+comparing against the exchange's record can say which.
+
+```bash
+python main.py --stage verify-data
+```
+
+Then record the finding in `verify_data.KNOWN_DISCONTINUITIES` with an honest
+status. Entries default to `unreviewed` and say so in their note; an unverified
+guess recorded as a finding is worse than an open question, because it stops
+anyone looking again. Seven are listed as of 2026-08-02, **five still unverified**.
+
+`--stage verify-data` runs on the Sunday cron. Doctor gates the count; verify-data
+prints the gaps, bad rows and jumps themselves.
+
+### `doctor: snapshots FAIL`
+
+A committed constant has outlived its clock. Three describe the world at a moment
+and all drift, in decreasing order of loudness:
+
+| Constant | Fails how | Clock |
+|---|---|---|
+| `holidays_2026.py` | raises on the first date it cannot answer | 60 days' notice |
+| `universe.py` | scans last season's index, silently | next reconstitution (March / September) |
+| `costs.py` | shifts every expectancy by a percentage nobody chose | one budget cycle (365 days) |
+
+The quieter the failure, the more it needs the clock. Cost rates are the quietest:
+a stale fee schedule produces numbers that look entirely reasonable.
+
 ### A symbol 404s every morning
 
 **Suspect a corporate action before suspecting the feed.** Ticker changes and

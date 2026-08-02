@@ -28,6 +28,31 @@ something the market will not let you do.
 
 RATES_SNAPSHOT = "2026-08"
 
+# How long a fee schedule is trusted before it needs re-checking against a contract
+# note. Statutory charges move in most Union Budgets — presented in February,
+# effective from April — so a year is one full budget cycle: any snapshot older
+# than that has certainly lived through one.
+#
+# This matters more quietly than the other stale constants. A wrong holiday fails
+# loudly and a stale universe scans the wrong names, but a stale rate table just
+# shifts every expectancy in the backtest by a percentage nobody chose, and the
+# numbers still look entirely reasonable.
+RATES_MAX_AGE_DAYS = 365
+
+
+def snapshot_warning(today=None):
+    """A sentence when the fee schedule is older than a budget cycle, else None."""
+    from datetime import date
+
+    today = today or date.today()
+    year, month = (int(part) for part in RATES_SNAPSHOT.split("-"))
+    age = (today - date(year, month, 1)).days
+    if age <= RATES_MAX_AGE_DAYS:
+        return None
+    return (f"cost rates are from {RATES_SNAPSHOT}, {age // 30} month(s) old — verify "
+            f"STT, stamp duty and the DP charge against a contract note and update "
+            f"src/costs.py; every expectancy in the backtest depends on them")
+
 # Per executed order. Discount brokers charge nothing for delivery and the lower of
 # a flat fee or a percentage for intraday.
 BROKERAGE_DELIVERY = 0.0
