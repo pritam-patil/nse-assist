@@ -115,26 +115,13 @@ class WeeklyTestCase(unittest.TestCase):
 
     # --- gate ---
 
-    def test_gate_reports_progress_towards_both_thresholds(self):
+    def test_the_weekly_carries_the_evaluation_gate(self):
+        """Folded in rather than sent separately. The gate's own criteria are
+        tested in tests/test_gate.py."""
         self._trade("momentum_continuation", 100)
-        gate = weekly.evaluation_gate(self.conn)
-        self.assertEqual(gate["days_required"], rules_config.EVALUATION_DAYS_REQUIRED)
-        self.assertEqual(gate["trades_required"], rules_config.EVALUATION_MIN_TRADES)
-        self.assertFalse(gate["complete"])
-
-    def test_trajectory_needs_a_countable_sample_before_it_trends(self):
-        self._trade("momentum_continuation", 100)
-        self.assertIn("too few trades", weekly.evaluation_gate(self.conn)["trajectory"])
-
-    def test_trajectory_turns_negative_on_a_countable_losing_sample(self):
-        for i in range(rules_config.EVALUATION_MIN_TRADES):
-            self._trade("momentum_continuation", -50, symbol=f"L{i}")
-        self.assertIn("trending fail", weekly.evaluation_gate(self.conn)["trajectory"])
-
-    def test_trajectory_turns_positive_on_a_countable_winning_sample(self):
-        for i in range(rules_config.EVALUATION_MIN_TRADES):
-            self._trade("momentum_continuation", 50, symbol=f"W{i}")
-        self.assertIn("trending pass", weekly.evaluation_gate(self.conn)["trajectory"])
+        text = weekly.build_weekly(self.conn, self.day)
+        self.assertIn("EVALUATION GATE", text)
+        self.assertIn("five pre-committed criteria", text)
 
     # --- benchmark ---
 

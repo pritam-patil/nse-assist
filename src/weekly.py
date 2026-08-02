@@ -25,7 +25,7 @@ and showing it beside the cumulative number is what keeps it in proportion.
 
 from datetime import date, timedelta
 
-from src import backtest, deliver, fund_digest, health, risk_config, rules_config, signals
+from src import backtest, deliver, fund_digest, gate, health, risk_config, rules_config, signals
 from src.db import get_connection, init_db
 from src.runlog import today
 
@@ -123,42 +123,6 @@ def benchmark_comparison(conn):
     }
 
 
-def evaluation_gate(conn):
-    """Progress towards a verdict worth acting on, and where it is trending."""
-    row = conn.execute(
-        "SELECT MIN(entry_date), COUNT(*) FROM paper_trades WHERE status = 'closed'"
-    ).fetchone()
-    first, closed = row[0], row[1]
-    days = (date.fromisoformat(today()) - date.fromisoformat(first)).days if first else 0
-
-    net = conn.execute(
-        "SELECT COALESCE(SUM(pnl), 0) FROM paper_trades WHERE status = 'closed'"
-    ).fetchone()[0]
-    expectancy = (net / closed) if closed else None
-
-    days_met = days >= rules_config.EVALUATION_DAYS_REQUIRED
-    trades_met = closed >= rules_config.EVALUATION_MIN_TRADES
-
-    if not closed:
-        trajectory = "not started — no closed trades"
-    elif not trades_met:
-        # The binding constraint is almost always trades, not days: a rule can sit
-        # through a whole quarter and still have nothing to say if it barely fired.
-        trajectory = f"too few trades to trend ({closed} of {rules_config.EVALUATION_MIN_TRADES})"
-    elif expectancy > 0:
-        trajectory = "trending pass — positive expectancy on a countable sample"
-    else:
-        trajectory = "trending fail — negative expectancy on a countable sample"
-
-    return {
-        "days": days, "days_required": rules_config.EVALUATION_DAYS_REQUIRED,
-        "trades": closed, "trades_required": rules_config.EVALUATION_MIN_TRADES,
-        "complete": days_met and trades_met,
-        "expectancy": round(expectancy, 2) if expectancy is not None else None,
-        "trajectory": trajectory,
-    }
-
-
 def _hit(value):
     return f"{value:.1%}" if value is not None else "n/a"
 
@@ -168,7 +132,6 @@ def build_weekly(conn, day=None):
     week = _rule_stats(conn, since=since)
     total = _rule_stats(conn)
     cohorts = cohort_stats(conn)
-    gate = evaluation_gate(conn)
     versus = benchmark_comparison(conn)
 
     lines = [f"nse-assist weekly — {end}"]
@@ -234,13 +197,7 @@ def build_weekly(conn, day=None):
         difference = versus["net"] - (versus["index_pnl"] or 0)
         lines.append(f"  difference    {difference:>12,.0f}")
 
-    lines.append("\nEVALUATION GATE")
-    lines.append(f"  {gate['days']} of {gate['days_required']} days, "
-                 f"{gate['trades']} of {gate['trades_required']} closed trades")
-    if gate["expectancy"] is not None:
-        lines.append(f"  live expectancy {gate['expectancy']:,.0f} per trade")
-    lines.append(f"  trajectory: {gate['trajectory']}")
-    lines.append(f"  thresholds are {rules_config.EVALUATION_BASIS}.")
+    lines.append("\n" + gate.build_gate(conn, day))
 
     # Appended rather than sent as its own message: two Telegram messages minutes
     # apart on a Sunday evening is how both stop being read.

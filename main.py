@@ -4,7 +4,7 @@ import argparse
 import sys
 import traceback
 
-from src import backfill, backtest, brief, deliver, doctor, features, funds, ingest, journal
+from src import backfill, backtest, brief, deliver, doctor, features, funds, gate, ingest, journal
 from src import fund_digest, journal_report, runlog
 from src import signals, verify_data, walkforward, weekly, whatif
 from src import db
@@ -21,6 +21,8 @@ STAGES = {
     "journal": journal,
     "journal-report": journal_report,
     "weekly": weekly,
+    # Standalone for a mid-week look; the Sunday weekly embeds it.
+    "gate": gate,
     "funds": funds,
     "fund-digest": fund_digest,
     "deliver": deliver,

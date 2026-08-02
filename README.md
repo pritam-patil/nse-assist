@@ -124,6 +124,7 @@ alpha.
 | `brief` | The morning brief | morning cron |
 | `weekly` | Sunday review, appends the fund digest | Sunday cron |
 | `fund-digest` | The parked-cash section, standalone | on request |
+| `gate` | The five frozen evaluation criteria | Sunday cron (in `weekly`) |
 | `poll` | Answer `/whatif` commands | 30-min cron |
 | `doctor` | 17 health checks + freshness table | weekly cron |
 | `backtest` | Replay rules over stored history (minutes) | no |
@@ -247,8 +248,9 @@ silent morning is worse — you cannot tell it from a morning with nothing to re
 ### Sunday evening — 19:30
 
 The weekly: per-rule live-versus-backtest drift, the confirmed-versus-solo cohort
-split, performance against NIFTY held over the same days, and the evaluation gate
-(90 days / 30 trades). The parked-cash fund digest is appended to the same message
+split, performance against NIFTY held over the same days, and the
+[evaluation gate](#the-evaluation-gate-frozen) — all five frozen criteria with a
+pass/fail/insufficient mark and a trend. The parked-cash fund digest is appended to the same message
 rather than sent separately — two Telegram messages minutes apart on a Sunday
 evening is how both stop being read.
 
@@ -363,9 +365,10 @@ body cannot be swept, diffed, or attributed after the fact.
 | `RULE_BACKTEST_HIT_RATE` | `0.472 / 0.524 / 0.478` | The comparison target in the weekly drift column. **Still full-sample interim** — a live rate matching these has matched a flattered target. |
 | `DEDUPE_TIEBREAK` | `"tighter_stop"` | Applied when expectancies tie. |
 | `RANK_BY` | `"turnover"` | Ranks candidates before the profit cap, so the cap keeps the best rather than whichever the scan reached first. |
-| `EVALUATION_DAYS_REQUIRED` | `90` | Provisional. Roughly a quarter — more than one market mood, still a real deadline. |
-| `EVALUATION_MIN_TRADES` | `30` | The binding constraint. A rule can sit through a quarter and say nothing if it barely fired. |
-| `HIT_RATE_DRIFT_FLAG` | `0.15` | Live-vs-backtest gap that earns a flag. On a large sample that is the backtest being wrong; on a small one it is nothing yet. |
+| `HIT_RATE_DRIFT_FLAG` | `0.15` | Live-vs-backtest gap that earns a flag in the weekly. Same value as the gate's criterion 4. |
+
+The evaluation-gate thresholds also live in `rules_config.py` but are **frozen** —
+see [The evaluation gate](#the-evaluation-gate-frozen).
 
 **Tuning discipline.** Change one group at a time and re-measure — moving three
 thresholds together produces a number you cannot attribute. A threshold that works
@@ -436,6 +439,80 @@ replace them with what you hold.
 | `REQUEST_TIMEOUT_SECONDS` | `20` | |
 | `AMFI_NAV_URL` | AMFI NAVAll.txt | |
 | `FUND_SCHEME_CODES` | — | One-off override of the committed watchlist. |
+
+---
+
+## The evaluation gate (frozen)
+
+**Pre-committed 2026-08-02, before a single paper trade existed.** These are the
+criteria that decide whether the paper record justifies anything. They are stated
+here, in the config, and in the tests, and they are not to be edited after
+evaluation begins.
+
+### The five criteria
+
+| # | Criterion | Threshold |
+|---|---|---|
+| 1 | **Sample** — elapsed time AND closed trades, whichever comes later | ≥ 6 weeks (42 days) **and** ≥ 30 closed trades |
+| 2 | **Cumulative P&L**, after all costs and slippage | > 0 |
+| 3 | **Expectancy per trade** | > 0 |
+| 4 | **Live-vs-backtest hit-rate drift**, worst rule | < 15 percentage points |
+| 5 | **Against the index** — paper P&L vs NIFTY over the same days | paper ≥ index (ties pass) |
+
+**All five must hold simultaneously for a PASS.** Four out of five is not a pass.
+
+Each is reported every Sunday as **pass / fail / insufficient-data**, with a trend
+computed against the same criterion evaluated a week earlier. Insufficient-data is
+a real third state, not a soft fail: it is the honest answer for most of the
+window, and collapsing it into "fail" would make an early-and-fine week look
+identical to a late-and-broken one.
+
+The overall verdict is **IN PROGRESS** until criterion 1 is met — a criterion
+failing in week three is not a verdict, because there are trades still to come.
+Once the sample is complete the window is closed and the verdict is final.
+
+### Why they are frozen, and how
+
+The failure this gate exists to prevent is not a bad rule. It is the
+reasonable-sounding conversation you have with yourself in week seven, looking at
+an expectancy of −₹40 on 28 trades, in which you notice that 30 was always a bit
+arbitrary and 15 points was maybe tight for a sample this small. Every step of that
+reasoning is defensible. The conclusion is fitted to the result.
+
+The numbers were therefore set at the only moment it was possible to set them
+honestly — before there was anything to look at.
+
+`tests/test_gate.py` asserts every threshold by literal value. That looks like
+testing that a constant equals itself, and it is, deliberately: **the mechanism is
+social, not technical.** An edit to `rules_config.py` fails the suite until this
+test is edited too, so relaxing a criterion costs a second commit that says, in the
+diff, that a goalpost was moved. It is meant to be annoying.
+
+### A FAIL is a success of the system
+
+If the window closes on a FAIL, the gate did the job it was built for. The
+outcomes are: send the rules back for another walk-forward cycle, or keep the
+project paper-only permanently. **Both are fine.** The failure would have been
+finding this out with real money.
+
+The message says this in the week it prints FAIL, because that is the week nobody
+wants to read it.
+
+### A known redundancy, recorded rather than fixed
+
+Criteria 2 and 3 cannot disagree. Expectancy as specified is mean P&L per trade —
+net divided by count — so for any non-empty sample the two carry the same sign.
+Criterion 3 can never be the one that fails a gate criterion 2 passed.
+
+It is implemented and reported anyway. Quietly dropping a pre-committed criterion
+because it turned out to be redundant is the same edit as relaxing one because it
+turned out to be strict, and the whole point of freezing them is that neither
+happens after the fact. `test_expectancy_and_cumulative_pnl_always_agree` pins the
+redundancy so it is known rather than accidental.
+
+```bash
+python main.py --stage gate     # standalone; the Sunday weekly embeds it
+```
 
 ---
 

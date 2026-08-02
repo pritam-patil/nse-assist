@@ -124,27 +124,70 @@ RULE_BACKTEST_HIT_RATE = {
 # shares and the position is denser in the setup rather than in the noise.
 DEDUPE_TIEBREAK = "tighter_stop"
 
-# --- evaluation gate ----------------------------------------------------------
-# How long paper trading must run, and on how many trades, before its verdict is
-# worth acting on. The weekly message tracks progress against these.
+# --- the evaluation gate: FROZEN ----------------------------------------------
 #
-# PROVISIONAL, pending Burst 18. These are stated so the tracker has something to
-# count towards rather than reporting a bare day count with no destination; they
-# have not been derived from a power calculation. When Burst 18 sets the real
-# thresholds it should overwrite this block, and the basis line should say so.
+# ══════════════════════════════════════════════════════════════════════════════
+#  PRE-COMMITTED ON 2026-08-02, BEFORE ANY PAPER TRADE WAS ENTERED.
+#  DO NOT EDIT THESE VALUES AFTER EVALUATION BEGINS.
+# ══════════════════════════════════════════════════════════════════════════════
 #
-# 90 days is roughly a quarter — long enough to span more than one market mood,
-# short enough to be a real deadline. 30 trades is the same evidence floor the
-# walk-forward uses, and it is the binding one: a rule can sit through 90 days and
-# still have nothing to say if it barely fired.
-EVALUATION_BASIS = "provisional, pending Burst 18"
-EVALUATION_DAYS_REQUIRED = 90
+# Five criteria. All five must hold simultaneously for a PASS. They are frozen
+# because the failure mode this gate exists to prevent is not a bad rule — it is a
+# good-faith reader looking at a near-miss and deciding the threshold was always a
+# little too strict. That decision feels like judgement and is indistinguishable
+# from fitting the test to the result.
+#
+# They were set before any evidence existed, which is the only moment at which it
+# is possible to set them honestly.
+#
+# CHANGING THEM: tests/test_gate.py asserts every value below. An edit here fails
+# the suite until the test is edited too, so moving a goalpost costs a second
+# deliberate commit that says so in the diff. That is the entire mechanism, and it
+# is meant to be annoying.
+#
+# A FAIL at the end of the window is a SUCCESS OF THIS SYSTEM. It means the gate
+# did the job it was built for: the rules go back for another walk-forward cycle,
+# or the project stays paper-only. The failure would have been finding out with
+# real money.
+
+GATE_FROZEN_ON = "2026-08-02"
+GATE_BASIS = "pre-committed, frozen before evaluation began"
+
+# 1. SAMPLE — both, whichever comes later.
+#    Six weeks is long enough to span more than one market mood and short enough
+#    to be a real deadline. 30 trades is the same evidence floor the walk-forward
+#    uses, and it is usually the binding one: a rule can sit through six weeks and
+#    still have nothing to say if it barely fired.
+EVALUATION_WEEKS_REQUIRED = 6
+EVALUATION_DAYS_REQUIRED = EVALUATION_WEEKS_REQUIRED * 7   # 42
 EVALUATION_MIN_TRADES = 30
 
-# Live hit rate this far from the backtest's means one of them is wrong about the
-# market, and which one matters: a large gap on a large sample says the backtest
-# lied; the same gap on a handful of trades says nothing yet.
+# 2. CUMULATIVE P&L — strictly positive, after costs.
+#    Zero is a fail. Break-even means the rules paid for their own transaction
+#    costs and nothing else, which is not a reason to risk money.
+GATE_MIN_CUMULATIVE_PNL = 0.0
+
+# 3. EXPECTANCY PER TRADE — strictly positive.
+#    Separate from cumulative P&L because one large winner can carry a losing
+#    process. Both must hold.
+GATE_MIN_EXPECTANCY = 0.0
+
+# 4. HIT-RATE DRIFT — live vs backtest, below 15 percentage points.
+#    A larger gap means one of them is wrong about the market. On a sample this
+#    size that is the backtest, and a backtest that mis-describes the past has no
+#    standing to describe the future.
 HIT_RATE_DRIFT_FLAG = 0.15
+GATE_MAX_HIT_RATE_DRIFT = HIT_RATE_DRIFT_FLAG
+
+# 5. AGAINST THE INDEX — paper P&L at least the NIFTY return over the same days.
+#    The comparison the strategy has to win. Buy-and-hold costs one round trip and
+#    no attention; anything that underperforms it has charged you its transaction
+#    costs and your evenings for the privilege. Ties pass — matching the index
+#    while holding cash most of the time is a real result.
+GATE_BEAT_BENCHMARK = True
+
+# Kept for the older EVALUATION_BASIS references in reports.
+EVALUATION_BASIS = GATE_BASIS
 
 # --- surfacing ----------------------------------------------------------------
 # Candidates are ranked before the profit cap is applied, so the cap keeps the best
