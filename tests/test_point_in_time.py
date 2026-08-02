@@ -259,21 +259,24 @@ class PointInTimeTestCase(unittest.TestCase):
                 self.assertEqual(features.compute_as_of(every, probe),
                                  features.compute_for(self.conn, SYMBOL, as_of=probe))
 
-    def test_backtest_ignores_bars_after_as_of(self):
-        """The stage-level property: a backtest run as of D must not be moved by
-        anything dated later, however extreme."""
+    def test_backtest_scan_ignores_bars_after_as_of(self):
+        """The stage-level property: the signals a backtest finds up to D must not
+        be moved by anything dated later, however extreme.
+
+        scan_history() is where the backtest reads features, so this is the point
+        the guarantee has to hold — the exit simulation downstream only ever reads
+        bars it is handed.
+        """
         from src import backtest
 
         every = features.load_bars(self.conn, SYMBOL, as_of=None)
-        for bar in every:
-            bar["symbol"] = SYMBOL
-        before = backtest.simulate_symbol(features.bars_as_of(every, self.as_of))
+        features.clear_cache()
+        before = backtest.scan_history({SYMBOL: features.bars_as_of(every, self.as_of)})
 
         self._corrupt_after(self.as_of)
-        after_bars = features.load_bars(self.conn, SYMBOL, as_of=None)
-        for bar in after_bars:
-            bar["symbol"] = SYMBOL
-        after = backtest.simulate_symbol(features.bars_as_of(after_bars, self.as_of))
+        corrupted = features.load_bars(self.conn, SYMBOL, as_of=None)
+        features.clear_cache()
+        after = backtest.scan_history({SYMBOL: features.bars_as_of(corrupted, self.as_of)})
 
         self.assertEqual(before, after)
 
