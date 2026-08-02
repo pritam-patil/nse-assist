@@ -124,6 +124,28 @@ RULE_BACKTEST_HIT_RATE = {
 # shares and the position is denser in the setup rather than in the noise.
 DEDUPE_TIEBREAK = "tighter_stop"
 
+# --- evaluation gate ----------------------------------------------------------
+# How long paper trading must run, and on how many trades, before its verdict is
+# worth acting on. The weekly message tracks progress against these.
+#
+# PROVISIONAL, pending Burst 18. These are stated so the tracker has something to
+# count towards rather than reporting a bare day count with no destination; they
+# have not been derived from a power calculation. When Burst 18 sets the real
+# thresholds it should overwrite this block, and the basis line should say so.
+#
+# 90 days is roughly a quarter — long enough to span more than one market mood,
+# short enough to be a real deadline. 30 trades is the same evidence floor the
+# walk-forward uses, and it is the binding one: a rule can sit through 90 days and
+# still have nothing to say if it barely fired.
+EVALUATION_BASIS = "provisional, pending Burst 18"
+EVALUATION_DAYS_REQUIRED = 90
+EVALUATION_MIN_TRADES = 30
+
+# Live hit rate this far from the backtest's means one of them is wrong about the
+# market, and which one matters: a large gap on a large sample says the backtest
+# lied; the same gap on a handful of trades says nothing yet.
+HIT_RATE_DRIFT_FLAG = 0.15
+
 # --- surfacing ----------------------------------------------------------------
 # Candidates are ranked before the profit cap is applied, so the cap keeps the best
 # of them rather than whichever the scan happened to reach first. Turnover, because

@@ -51,8 +51,11 @@ jobs:
       - name: Ingest fund NAVs and refresh metrics
         run: python main.py --stage funds
 
-      - name: Journal report
-        run: python main.py --stage journal-report
+      # The weekly message. journal-report stays a manual stage — it prints the same
+      # ledger numbers to a terminal, and sending both would be the same content
+      # twice.
+      - name: Weekly report
+        run: python main.py --stage weekly
 
       - name: Commit the state file
         if: always()

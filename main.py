@@ -6,7 +6,7 @@ import traceback
 
 from src import backfill, backtest, brief, deliver, doctor, features, funds, ingest, journal
 from src import journal_report, runlog
-from src import signals, verify_data, walkforward
+from src import signals, verify_data, walkforward, weekly
 from src import db
 
 STAGES = {
@@ -20,6 +20,7 @@ STAGES = {
     "walkforward": walkforward,
     "journal": journal,
     "journal-report": journal_report,
+    "weekly": weekly,
     "funds": funds,
     "deliver": deliver,
     "brief": brief,
