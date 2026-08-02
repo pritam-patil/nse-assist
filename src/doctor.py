@@ -60,6 +60,12 @@ def check_risk():
     )
 
 
+def check_rules():
+    from src import rules_config
+
+    return rules_config.assert_consistent()
+
+
 def check_sizing_coverage():
     """How much of the universe can actually be sized at the current capital.
 
@@ -280,6 +286,7 @@ def run(dry_run=False, **kwargs):
         _check("universe", check_universe),
         _check("risk", check_risk),
         _check("costs", check_costs),
+        _check("rules", check_rules),
         _check("sizing", check_sizing_coverage),
         _check("calendar", check_calendar),
         _check("bhavcopy", check_bhavcopy),

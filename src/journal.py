@@ -14,7 +14,7 @@ from src import features, risk_config
 from src.db import get_connection, init_db
 from src.runlog import today
 
-STATUS_NEW = "new"
+STATUS_NEW = "proposed"  # signals.py writes this; journal moves it on
 STATUS_TAKEN = "taken"
 STATUS_SKIPPED = "skipped"
 STATUS_EXPIRED = "expired"

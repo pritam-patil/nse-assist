@@ -44,6 +44,7 @@ RSI_PERIOD = 14
 ATR_PERIOD = 14
 VOLUME_AVG_PERIOD = 20
 REALIZED_VOL_PERIOD = 20
+BREAKOUT_LOOKBACK = 20
 
 # Enough history to warm the longest lookback (the 52-week window) with margin.
 MIN_BARS = LOOKBACK_52W + 8
@@ -231,6 +232,13 @@ def compute(bars):
     emas = {period: ema(closes, period) for period in EMA_PERIODS}
     avg_volume = sma(volumes, VOLUME_AVG_PERIOD)
 
+    # PRIOR n-day extremes: the window excludes the current bar. Including it would
+    # make "close above the 20-day high" compare today against a set containing
+    # today, which is true on any new high and therefore says nothing.
+    prior = bars[-(BREAKOUT_LOOKBACK + 1):-1]
+    prior_high_20 = max((b["high"] for b in prior if b["high"] is not None), default=None)
+    prior_low_20 = min((b["low"] for b in prior if b["low"] is not None), default=None)
+
     window_52w = bars[-LOOKBACK_52W:]
     high_52w = max((b["high"] for b in window_52w if b["high"] is not None), default=None)
     low_52w = min((b["low"] for b in window_52w if b["low"] is not None), default=None)
@@ -259,6 +267,8 @@ def compute(bars):
         "avg_volume_20": avg_volume,
         "volume_ratio_20": (last["volume"] / avg_volume) if avg_volume else None,
         "realized_vol_20": realized_vol(closes),
+        "prior_high_20": prior_high_20,
+        "prior_low_20": prior_low_20,
         "high_52w": high_52w,
         "low_52w": low_52w,
         # Negative below the high, positive above the low. Both are 0 at the extreme.
@@ -336,6 +346,7 @@ FRAME_COLUMNS = (
     "rsi_14", "atr_14", "atr_pct",
     "volume", "avg_volume_20", "volume_ratio_20",
     "realized_vol_20",
+    "prior_high_20", "prior_low_20",
     "high_52w", "low_52w", "dist_52w_high", "dist_52w_low",
     "max_jump", "max_jump_date",
 )
