@@ -165,17 +165,27 @@ Copy `.env.example` to `.env` and fill in `TELEGRAM_BOT_TOKEN` and
 away from the real file and it is tracked. A real token reached this public repo
 that way once.
 
-### 3. Enable the secret guard
+### 3. Enable the secret guard and automatic repacking
 
 ```bash
 git config core.hooksPath .githooks
+git config gc.auto 256
 ```
 
-Refuses any commit staging a filled-in template, a file named `.env`, or anything
-shaped like a token. It reads *staged* content, not the working tree, because those
-differ the moment a file is edited after `git add`. It never prints the offending
-value — a scanner that echoes a secret to prove it found one has copied it into
-your scrollback and your CI logs.
+The hook refuses any commit staging a filled-in template, a file named `.env`, or
+anything shaped like a token. It reads *staged* content, not the working tree,
+because those differ the moment a file is edited after `git add`. It never prints
+the offending value — a scanner that echoes a secret to prove it found one has
+copied it into your scrollback and your CI logs.
+
+`gc.auto` is about the committed database, not secrets. Every commit writes a full
+compressed copy of `output/nse.db` as a loose object; only repacking collapses
+them into deltas. Measured on this repo: **21 un-repacked commits took 81 MB, and a
+plain `git gc` took the same history to 3.8 MB.** Git's default threshold is 6,700
+loose objects, which a repo adding a few large objects a day will not reach for
+years — so a long-lived working copy drifts. 256 makes repacking happen on its own.
+The remote is unaffected either way: GitHub repacks server-side, so a fresh clone
+is always small.
 
 ### 4. Choose your funds
 
@@ -1050,8 +1060,22 @@ broken. `test_cache_cannot_mask_a_leak` proves the cache genuinely does go stale
   Re-measure with `--stage backtest` and validate with `--stage walkforward` before
   moving them.
 - **`output/nse.db` is committed**, so each scheduled run inherits history from the
-  one before. About 12 MB. SQLite does not delta-compress, so daily commits grow
-  git history meaningfully — if it gets uncomfortable, move it to a release asset.
+  one before. About 12 MB, and it grows the repository by roughly **5 MB a year** —
+  measured, not estimated. SQLite rewrites only the pages it touches, so successive
+  versions delta-compress well: 12.4 MB packs to 3.7 MB, and each daily commit adds
+  about 19 KB on top. An earlier version of this file claimed ~2 GB/year, which was
+  wrong by roughly 400× — it assumed page rewrites would defeat delta compression.
+  There is no growth problem and no reason to move the file out of git.
+
+  The cost that *is* real is local and temporary: every commit writes a full
+  compressed copy as a loose object, and only repacking collapses them. 21 commits
+  un-repacked measured 81 MB; a plain `git gc` took it to 3.8 MB. GitHub repacks
+  server-side, so the remote and any fresh clone stay small — it is a long-lived
+  working copy that drifts. See [Setup](#1-install) for the `gc.auto` setting.
+
+  One operation genuinely costs a full-size delta: `--stage backfill --force`
+  re-adjusts every symbol and rewrites most of the file. Rare and deliberate, so
+  not worth designing around, but worth knowing before you run it.
 
 ---
 

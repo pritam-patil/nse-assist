@@ -75,10 +75,12 @@ jobs:
           #
           # Every run writes two rows to the `runs` audit table, so the file
           # differs even when there were no updates — and this workflow fires 29
-          # times a day against a 12 MB binary that git cannot delta-compress.
-          # Committing each of those is a third of a gigabyte of history a day to
-          # record that nothing happened. The offset is the only state here worth
-          # keeping, so it decides.
+          # times a day. Successive versions delta-compress well (~19 KB each once
+          # packed), so this is not the gigabytes an earlier version of this
+          # comment claimed. It is still 29 commits a day recording that nothing
+          # happened, each writing a full 3.7 MB loose object until something
+          # repacks. The offset is the only state here worth keeping, so it
+          # decides.
           if [ "$before" = "$after" ]; then
             echo "no commands handled — discarding the run-log churn"
             git checkout -- output/nse.db

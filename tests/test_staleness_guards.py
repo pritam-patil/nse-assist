@@ -107,5 +107,48 @@ class DiscontinuityListTestCase(unittest.TestCase):
         self.assertEqual(len(keys), len(set(keys)))
 
 
+class DatabaseSizeGuardTestCase(unittest.TestCase):
+    """The guard is on an assumption, not a growth budget.
+
+    Daily commits stay cheap because SQLite rewrites only the pages it touches, so
+    successive versions delta-compress. That holds while the file is mostly
+    append-only price history. The threshold exists to catch a change in shape —
+    a table storing large text per row, a much wider universe — not to ration
+    growth the file will never reach.
+    """
+
+    def test_the_guard_is_well_clear_of_the_measured_growth_rate(self):
+        """~5 MB/year from ~12 MB. A guard that trips on ordinary growth would be
+        raised on sight and stop meaning anything."""
+        from src import doctor
+
+        years_of_headroom = (doctor.MAX_DB_MB - 12.4) / 5.0
+        self.assertGreater(years_of_headroom, 5)
+
+    def test_a_missing_database_is_not_a_failure(self):
+        """A fresh checkout has no database yet, and doctor is the first thing you
+        run there."""
+        from src import config, doctor
+
+        real = config.DB_PATH
+        config.DB_PATH = "/nonexistent/nse.db"
+        try:
+            self.assertIn("no database", doctor.check_db_size())
+        finally:
+            config.DB_PATH = real
+
+    def test_an_oversized_database_fails(self):
+        from src import doctor
+
+        real = doctor.MAX_DB_MB
+        doctor.MAX_DB_MB = 0.000001
+        try:
+            with self.assertRaises(RuntimeError) as caught:
+                doctor.check_db_size()
+            self.assertIn("mostly append-only", str(caught.exception))
+        finally:
+            doctor.MAX_DB_MB = real
+
+
 if __name__ == "__main__":
     unittest.main()

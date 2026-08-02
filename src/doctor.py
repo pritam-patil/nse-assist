@@ -307,6 +307,38 @@ def check_discontinuities():
             + (f", {pending} still unverified against bhavcopy" if pending else ""))
 
 
+# Roughly four times the current 12.4 MB. Not a growth budget — the file grows
+# about 5 MB a year and would take decades to reach this. It is a guard on the
+# ASSUMPTION: successive versions delta-compress well because SQLite rewrites only
+# the pages it touches, which holds while the file is mostly append-only price
+# history. Something that breaks that shape — a table storing large text per row,
+# a much wider universe, a VACUUM that reorders every page — would show up here
+# first, and the committed-database decision would deserve re-examining.
+MAX_DB_MB = 50
+
+
+def check_db_size():
+    """The size of the thing every workflow commits.
+
+    Fails loud rather than warning, because by the time this trips the repository
+    has already been carrying the growth for a while and every future clone pays
+    for it.
+    """
+    import os
+
+    path = config.DB_PATH
+    if not os.path.exists(path):
+        return "no database yet"
+    megabytes = os.path.getsize(path) / 1e6
+    if megabytes > MAX_DB_MB:
+        raise RuntimeError(
+            f"{path} is {megabytes:,.0f} MB, past the {MAX_DB_MB} MB guard — the "
+            f"assumption that daily commits stay cheap depends on this file being "
+            f"mostly append-only price history. Check what grew before raising it"
+        )
+    return f"{megabytes:,.1f} MB of {MAX_DB_MB} MB guard (~5 MB/year growth)"
+
+
 def check_snapshot_age():
     """Committed constants that go stale silently.
 
@@ -437,6 +469,7 @@ def run(dry_run=False, **kwargs):
     checks = [
         _check("env", check_env),
         _check("database", check_db),
+        _check("db-size", check_db_size),
         _check("universe", check_universe),
         _check("risk", check_risk),
         _check("costs", check_costs),
