@@ -101,10 +101,50 @@ RULE_ENABLED = {
     "volume_breakout": False,
 }
 
+# Hit rate each rule achieved in the backtest, for the live-versus-backtest column
+# in --stage journal-report. Separate from RULE_EXPECTANCY because a rule can match
+# its expected hit rate while missing its expectancy badly, and the two failures
+# mean different things: a hit-rate match with an expectancy miss says the entries
+# are fine and the exits or costs are not.
+#
+# INTERIM, FULL-SAMPLE. These come from the Burst 7 per-rule replay over the whole
+# history, so they are the optimistic version — the same caveat RULE_EXPECTANCY
+# carried before walk-forward overwrote it. Walk-forward should replace them with
+# out-of-sample rates, and until it does, a live rate matching these has matched a
+# flattered target.
+RULE_BACKTEST_HIT_RATE_BASIS = "full-sample Burst 7, interim — not yet out-of-sample"
+RULE_BACKTEST_HIT_RATE = {
+    "momentum_continuation": 0.472,
+    "oversold_reversion": 0.524,
+    "volume_breakout": 0.478,
+}
+
 # Applied when expectancies tie, which is currently always. A tighter stop means
 # less risked per share for the same ATR view, so the same rupee budget buys more
 # shares and the position is denser in the setup rather than in the noise.
 DEDUPE_TIEBREAK = "tighter_stop"
+
+# --- evaluation gate ----------------------------------------------------------
+# How long paper trading must run, and on how many trades, before its verdict is
+# worth acting on. The weekly message tracks progress against these.
+#
+# PROVISIONAL, pending Burst 18. These are stated so the tracker has something to
+# count towards rather than reporting a bare day count with no destination; they
+# have not been derived from a power calculation. When Burst 18 sets the real
+# thresholds it should overwrite this block, and the basis line should say so.
+#
+# 90 days is roughly a quarter — long enough to span more than one market mood,
+# short enough to be a real deadline. 30 trades is the same evidence floor the
+# walk-forward uses, and it is the binding one: a rule can sit through 90 days and
+# still have nothing to say if it barely fired.
+EVALUATION_BASIS = "provisional, pending Burst 18"
+EVALUATION_DAYS_REQUIRED = 90
+EVALUATION_MIN_TRADES = 30
+
+# Live hit rate this far from the backtest's means one of them is wrong about the
+# market, and which one matters: a large gap on a large sample says the backtest
+# lied; the same gap on a handful of trades says nothing yet.
+HIT_RATE_DRIFT_FLAG = 0.15
 
 # --- surfacing ----------------------------------------------------------------
 # Candidates are ranked before the profit cap is applied, so the cap keeps the best

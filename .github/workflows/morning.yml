@@ -1,0 +1,80 @@
+name: morning
+
+# 03:15 UTC = 08:45 IST, weekdays. Thirty minutes before the 09:15 open: enough time
+# to read the brief and place orders, late enough that it is the last thing you see
+# before the session rather than something from an hour ago.
+#
+# Reads only. Nothing here writes to the database, so unlike the evening run there
+# is nothing to commit — but it shares the concurrency group anyway, because a
+# morning run overlapping an evening rebase would read a file mid-rewrite.
+
+on:
+  schedule:
+    - cron: "15 3 * * 1-5"
+  workflow_dispatch:
+
+concurrency:
+  group: nse-assist-state
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Check the secrets are actually populated
+        run: |
+          missing=""
+          [ -n "$TELEGRAM_BOT_TOKEN" ] || missing="$missing TELEGRAM_BOT_TOKEN"
+          [ -n "$TELEGRAM_CHAT_ID" ] || missing="$missing TELEGRAM_CHAT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::empty secret(s):$missing — defined-but-unmapped secrets arrive blank"
+            exit 1
+          fi
+
+      - name: Is there a session today?
+        id: calendar
+        run: |
+          python - <<'PY'
+          import os, sys
+          from datetime import datetime, timedelta, timezone
+          from src import holidays_2026 as calendar
+
+          # 03:15 UTC is 08:45 IST the SAME day, but the UTC date and the IST date
+          # diverge for any schedule before 18:30 UTC. Computing in IST is what makes
+          # the brief describe the session it is actually about to precede.
+          day = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date()
+          try:
+              trading = calendar.is_trading_day(day)
+          except RuntimeError as exc:
+              print(f"::error::{exc}")
+              sys.exit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as handle:
+              handle.write(f"trading={'true' if trading else 'false'}\n")
+          print(f"{day}: {'session' if trading else calendar.describe(day)}")
+          PY
+
+      - name: Send the brief
+        if: steps.calendar.outputs.trading == 'true'
+        run: python main.py --stage brief
+
+      - name: Alert on failure
+        if: failure()
+        run: |
+          curl -sS --max-time 20 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=nse-assist morning brief FAILED.
+          ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          No brief was sent before today's open. Last night's proposals are still in
+          the database; run --stage brief manually to see them." > /dev/null

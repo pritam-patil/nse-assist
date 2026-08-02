@@ -1,0 +1,79 @@
+name: sunday
+
+# 14:00 UTC = 19:30 IST on Sunday, the same clock time as the weekday evening run so
+# there is one hour to remember rather than two.
+#
+# Exists because fund NAVs do not follow the equity calendar. Liquid and overnight
+# schemes price every day of the week; a Monday-to-Friday schedule would miss two
+# observations in seven for exactly the funds cash is parked in. Measured on the
+# current watchlist: 325 NAVs a year for the liquid scheme against 240 for the
+# business-day ones.
+
+on:
+  schedule:
+    - cron: "0 14 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: nse-assist-state
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      FUND_SCHEME_CODES: ${{ vars.FUND_SCHEME_CODES }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Check the secrets are actually populated
+        run: |
+          missing=""
+          [ -n "$TELEGRAM_BOT_TOKEN" ] || missing="$missing TELEGRAM_BOT_TOKEN"
+          [ -n "$TELEGRAM_CHAT_ID" ] || missing="$missing TELEGRAM_CHAT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::empty secret(s):$missing — defined-but-unmapped secrets arrive blank"
+            exit 1
+          fi
+
+      # No calendar gate at all: the point of this run is the schemes that price on
+      # days the exchange is shut.
+      - name: Ingest fund NAVs and refresh metrics
+        run: python main.py --stage funds
+
+      # The weekly message. journal-report stays a manual stage — it prints the same
+      # ledger numbers to a terminal, and sending both would be the same content
+      # twice.
+      - name: Weekly report
+        run: python main.py --stage weekly
+
+      - name: Commit the state file
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git add -f output/nse.db
+          git diff --quiet --cached || git commit -m "state: $(date -u +%Y-%m-%d) sunday"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Alert on failure
+        if: failure()
+        run: |
+          curl -sS --max-time 20 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=nse-assist Sunday run FAILED.
+          ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Weekend fund NAVs may be missing. AMFI serves only the current dump, so a
+          missed weekend cannot be recovered from it later." > /dev/null

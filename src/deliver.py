@@ -6,6 +6,7 @@ does, because a bad token or chat id will not fix itself.
 """
 
 import html
+import json
 import time
 
 import requests
@@ -75,15 +76,70 @@ def split_message(text, limit=TELEGRAM_MAX_MESSAGE_CHARS):
     return [text[i : i + limit] for i in range(0, len(text), limit)]
 
 
-def send_message(text, dry_run=False):
+def send_message(text, dry_run=False, parse_mode="HTML"):
+    """Send, splitting if needed. `parse_mode=None` sends plain text.
+
+    Plain text matters for a message that carries no markup: under HTML parse mode a
+    bare ampersand or angle bracket in a symbol name is a 400 from Telegram, so
+    opting out beats escaping content that was never markup in the first place.
+    """
     if dry_run:
         print(f"[deliver] would send {len(text)} chars:\n{text}")
         return []
     config.require("TELEGRAM_CHAT_ID")
-    return [
-        _post("sendMessage", {"chat_id": config.TELEGRAM_CHAT_ID, "text": chunk, "parse_mode": "HTML"})
-        for chunk in split_message(text)
-    ]
+    payloads = []
+    for chunk in split_message(text):
+        data = {"chat_id": config.TELEGRAM_CHAT_ID, "text": chunk}
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+        payloads.append(_post("sendMessage", data))
+    return payloads
+
+
+def get_updates(offset=None, timeout=0):
+    """Pending updates, oldest first.
+
+    Telegram allows exactly ONE getUpdates consumer per bot and answers a second
+    one with 409 Conflict. Every scheduled workflow in this repo therefore shares a
+    concurrency group; the error is translated here because "Conflict" on its own
+    sends you looking at the wrong thing.
+
+    Only `message` updates are requested. This bot has no inline keyboards, and
+    asking for update types nothing handles means paging through them to advance
+    the offset.
+    """
+    data = {"timeout": timeout, "allowed_updates": json.dumps(["message"])}
+    if offset is not None:
+        data["offset"] = offset
+    try:
+        return _post("getUpdates", data=data)
+    except RuntimeError as exc:
+        if "409" in str(exc) or "Conflict" in str(exc):
+            raise RuntimeError(
+                "Telegram getUpdates conflict — another poller or a webhook is already "
+                "consuming this bot's updates. Only one consumer is permitted."
+            ) from exc
+        raise
+
+
+def send_reply(chat_id, text, reply_to_message_id=None, parse_mode=None):
+    """Answers into the chat a command arrived from, splitting if needed.
+
+    Separate from send_message() because that one always targets the configured
+    chat. A reply has to go back where it came from — and the caller is responsible
+    for having checked that "where it came from" is a chat we answer at all.
+    """
+    payloads = []
+    for index, chunk in enumerate(split_message(text)):
+        data = {"chat_id": chat_id, "text": chunk}
+        if parse_mode:
+            data["parse_mode"] = parse_mode
+        # Only the first chunk quotes the command; threading every chunk to it
+        # renders as a wall of repeated quotations on mobile.
+        if reply_to_message_id and index == 0:
+            data["reply_to_message_id"] = reply_to_message_id
+        payloads.append(_post("sendMessage", data))
+    return payloads
 
 
 def _todays_signals(conn, date):

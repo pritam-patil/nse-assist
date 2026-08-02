@@ -627,7 +627,7 @@ def fill_gaps(conn, symbols, session=None, dry_run=False, limit=MAX_GAP_FILLS):
 # --- stage --------------------------------------------------------------------
 
 
-def run(dry_run=False, symbols=None, backfill=False, **kwargs):
+def run(dry_run=False, symbols=None, backfill=False, require_bhavcopy=False, **kwargs):
     """Brings the universe's bars up to the most recent completed session.
 
     Exits cleanly with a "no session" line on weekends and holidays — that is the
@@ -736,6 +736,14 @@ def run(dry_run=False, symbols=None, backfill=False, **kwargs):
 
             if index < len(sessions) - 1:
                 time.sleep(PAUSE_BETWEEN_DAYS_SECONDS)
+
+        if fallback_days and require_bhavcopy:
+            missing = ", ".join(str(d) for d in sorted(fallback_days)[:5])
+            raise RuntimeError(
+                f"bhavcopy unavailable for {len(fallback_days)} session(s) ({missing}) "
+                f"and the yfinance fallback is suppressed — retry later, or drop "
+                f"require_bhavcopy to accept the fallback"
+            )
 
         if fallback_days:
             first, last = min(fallback_days), max(fallback_days)

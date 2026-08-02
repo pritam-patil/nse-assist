@@ -4,8 +4,9 @@ import argparse
 import sys
 import traceback
 
-from src import backfill, backtest, deliver, doctor, features, funds, ingest, journal, runlog
-from src import signals, verify_data, walkforward
+from src import backfill, backtest, brief, deliver, doctor, features, funds, ingest, journal
+from src import fund_digest, journal_report, runlog
+from src import signals, verify_data, walkforward, weekly, whatif
 from src import db
 
 STAGES = {
@@ -18,8 +19,16 @@ STAGES = {
     "verify-data": verify_data,
     "walkforward": walkforward,
     "journal": journal,
+    "journal-report": journal_report,
+    "weekly": weekly,
     "funds": funds,
+    "fund-digest": fund_digest,
     "deliver": deliver,
+    "brief": brief,
+    # Reads the chat rather than writing to it: drains pending /whatif commands and
+    # answers them. Deliberately outside ALL_STAGES — Telegram permits one
+    # getUpdates consumer per bot, so this must not also run inside the daily chain.
+    "poll": whatif,
     "doctor": doctor,
 }
 
@@ -71,6 +80,13 @@ def parse_args():
         "Needed after changing which source outranks which.",
     )
     parser.add_argument(
+        "--require-bhavcopy",
+        action="store_true",
+        help="Ingest only: fail rather than fall back to yfinance when NSE's file is "
+        "not published yet, so a scheduler can retry a late bhavcopy before settling "
+        "for the weaker source.",
+    )
+    parser.add_argument(
         "--backfill",
         action="store_true",
         help="Ingest only: re-request the full lookback for every symbol instead of "
@@ -96,6 +112,7 @@ def main():
                 search_term=args.search,
                 history=args.history,
                 apply=args.apply,
+                require_bhavcopy=args.require_bhavcopy,
             )
             runlog.log(name, "ok")
         except Exception as exc:

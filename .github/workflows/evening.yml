@@ -1,0 +1,145 @@
+name: evening
+
+# 14:00 UTC = 19:30 IST, weekdays. After the 15:30 close, with room for one retry
+# if NSE publishes the bhavcopy late.
+#
+# CRONS ARE UTC. GitHub has no timezone setting, so a cron written as though it were
+# IST fires five and a half hours early — 09:00 IST, during the session it is meant
+# to run after. Every schedule in this repo states both times.
+#
+# ORDER MATTERS. ingest -> funds -> features -> signals -> journal -> deliver.
+# Signals read features, journal fills from signals, delivery reports the ledger.
+# The AMFI pull sits in this same chain rather than on its own schedule: a separate
+# cron for it is exactly how fund_navs goes stale for a fortnight while every run
+# reports success.
+#
+# Budget: two short runs a day is roughly 120-180 minutes a month. Nothing to
+# optimise, and no reason to make the repo public for minutes.
+
+on:
+  schedule:
+    - cron: "0 14 * * 1-5"
+  workflow_dispatch:
+
+# Shared with morning.yml and sunday.yml. All three commit output/nse.db, so they
+# must never interleave. cancel-in-progress is false because a cancelled evening run
+# can lose a session outright — ingest only fetches forward from the stored
+# watermark, and the watermark never advanced.
+concurrency:
+  group: nse-assist-state
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    # Mapped explicitly. A secret referenced but never defined arrives as an empty
+    # string rather than an error, so the guard below tests for emptiness instead of
+    # trusting that the mapping worked.
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      FUND_SCHEME_CODES: ${{ vars.FUND_SCHEME_CODES }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Check the secrets are actually populated
+        run: |
+          missing=""
+          [ -n "$TELEGRAM_BOT_TOKEN" ] || missing="$missing TELEGRAM_BOT_TOKEN"
+          [ -n "$TELEGRAM_CHAT_ID" ] || missing="$missing TELEGRAM_CHAT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::empty secret(s):$missing — defined-but-unmapped secrets arrive blank"
+            exit 1
+          fi
+
+      - name: Was today a session?
+        id: calendar
+        run: |
+          python - <<'PY'
+          import os, sys
+          from datetime import datetime, timedelta, timezone
+          from src import holidays_2026 as calendar
+
+          # IST, not the runner's UTC. They agree at 14:00, but stating it stops a
+          # later schedule change from silently shifting the date.
+          day = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date()
+          try:
+              trading = calendar.is_trading_day(day)
+          except RuntimeError as exc:
+              # Loud, never skipped. An uncovered year would otherwise turn every run
+              # into a no-op forever, and a pipeline quietly doing nothing looks
+              # exactly like one with nothing to do.
+              print(f"::error::{exc}")
+              sys.exit(1)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as handle:
+              handle.write(f"trading={'true' if trading else 'false'}\n")
+          print(f"{day}: {'session' if trading else calendar.describe(day)}")
+          PY
+
+      - name: Ingest prices, retrying once if the bhavcopy is late
+        if: steps.calendar.outputs.trading == 'true'
+        run: |
+          set +e
+          python main.py --stage ingest --require-bhavcopy && exit 0
+          echo "::notice::bhavcopy not published yet; waiting 30 minutes for one retry"
+          sleep 1800
+          python main.py --stage ingest --require-bhavcopy && exit 0
+          echo "::warning::bhavcopy still unavailable — accepting the yfinance fallback"
+          set -e
+          python main.py --stage ingest
+
+      # No holiday gate: fund NAVs do not follow the equity calendar. Liquid schemes
+      # price on days the exchange is shut, so gating this would drop observations
+      # for exactly the funds cash is parked in.
+      - name: Ingest fund NAVs and refresh metrics
+        run: python main.py --stage funds
+
+      - name: Features
+        if: steps.calendar.outputs.trading == 'true'
+        run: python main.py --stage features
+
+      - name: Signals
+        if: steps.calendar.outputs.trading == 'true'
+        run: python main.py --stage signals
+
+      - name: Journal
+        if: steps.calendar.outputs.trading == 'true'
+        run: python main.py --stage journal
+
+      - name: Deliver the evening report
+        if: steps.calendar.outputs.trading == 'true'
+        run: python main.py --stage deliver
+
+      - name: Commit the state file
+        # always(): whatever did land — bars, NAVs, the run log itself — is exactly
+        # what you want to inspect after a partial failure.
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Rebase first. Three workflows write this file; a rejected push here loses
+          # the session rather than retrying it.
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git add -f output/nse.db
+          git diff --quiet --cached || git commit -m "state: $(date -u +%Y-%m-%d) evening"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Alert on failure
+        if: failure()
+        run: |
+          curl -sS --max-time 20 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=nse-assist evening run FAILED.
+          ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Today's prices or NAVs may be missing. Ingest only fetches forward from the
+          stored watermark, so a gap here needs a manual backfill rather than fixing
+          itself tomorrow." > /dev/null
