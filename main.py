@@ -74,6 +74,13 @@ def parse_args():
         "Needed after changing which source outranks which.",
     )
     parser.add_argument(
+        "--require-bhavcopy",
+        action="store_true",
+        help="Ingest only: fail rather than fall back to yfinance when NSE's file is "
+        "not published yet, so a scheduler can retry a late bhavcopy before settling "
+        "for the weaker source.",
+    )
+    parser.add_argument(
         "--backfill",
         action="store_true",
         help="Ingest only: re-request the full lookback for every symbol instead of "
@@ -99,6 +106,7 @@ def main():
                 search_term=args.search,
                 history=args.history,
                 apply=args.apply,
+                require_bhavcopy=args.require_bhavcopy,
             )
             runlog.log(name, "ok")
         except Exception as exc:
