@@ -1,53 +1,103 @@
-"""Stage 5 — the paper ledger: fills new signals, exits open ones, enforces the
-daily limits from risk_config.
+"""Stage 5 — the paper ledger: fills proposed signals, walks open positions, records P&L.
 
-This is the only module that writes to paper_trades and the only one that moves a
-signal off status 'new'. Running it twice in a day is safe — every step is
-idempotent against what is already in the table.
+    python main.py --stage journal          # each evening, after ingest
+    python main.py --stage journal-report   # live results beside the backtest's
 
-Fills use the *next* bar's open, not the signal bar's close. A signal is generated
-after the close, so filling at that close would be buying at a price that had
-already passed.
+FILL LOGIC IS IMPORTED, NEVER REIMPLEMENTED
+
+Every exit decision comes from backtest.resolve_exit(). Not a copy, not "the same
+rules written out again" — the same function object. The point of running a paper
+ledger next to a backtest is to learn whether the backtest predicts anything, and
+that comparison is void the moment the two fill differently. A divergence would not
+raise; it would produce two plausible P&L curves that disagree for reasons nobody
+could locate.
+
+Not hypothetical: before the shared primitive existed this module had its own exit
+loop and a 20-session hold against the backtest's 10, so the ledger was holding
+every position twice as long as the strategy being measured.
+
+WHAT IS DELIBERATELY DIFFERENT
+
+The backtest force-closes a position when history runs out, marking it at the last
+close so an unfinished trade is not dropped from the sample. A live position with
+sessions still to run is simply open, and stays open. That is the one place the two
+must not match, and it is why the shared function is the per-bar decision rather
+than the whole trade.
+
+IDEMPOTENT
+
+The evening chain gets re-run — a retried workflow, a manual invocation after a fix
+— and must not open a position twice or book a P&L twice. A UNIQUE index on
+signal_id enforces one trade per signal in the database rather than in a guard that
+can be raced, and only rows with status='open' are ever walked.
 """
 
-from src import features, risk_config
+from datetime import date
+
+from src import backtest, costs, risk_config
 from src.db import get_connection, init_db
 from src.runlog import today
 
-STATUS_NEW = "proposed"  # signals.py writes this; journal moves it on
+STATUS_PROPOSED = "proposed"
 STATUS_TAKEN = "taken"
 STATUS_SKIPPED = "skipped"
 STATUS_EXPIRED = "expired"
 
-EXIT_TARGET = "target"
-EXIT_STOP = "stop"
-EXIT_TIME = "time"
+TRADE_OPEN = "open"
+TRADE_CLOSED = "closed"
 
-MAX_HOLD_BARS = 20
+# Imported, not restated. See the module docstring.
+MAX_HOLD_BARS = backtest.MAX_HOLD_BARS
 
 
-def open_positions(conn):
+# --- reading ------------------------------------------------------------------
+
+
+def open_trades(conn):
     rows = conn.execute(
         """SELECT t.id, t.signal_id, t.entry_date, t.entry_price,
-                  s.symbol, s.direction, s.stop, s.target, s.size
+                  s.symbol, s.rule, s.direction, s.stop, s.target, s.size
            FROM paper_trades t JOIN signals s ON s.id = t.signal_id
-           WHERE t.exit_date IS NULL"""
+           WHERE t.status = ? ORDER BY t.entry_date, s.symbol""",
+        (TRADE_OPEN,),
     ).fetchall()
     return [dict(row) for row in rows]
 
 
-def realised_pnl(conn, date):
+# deliver.py reports the book; the shape it wants is the same one.
+open_positions = open_trades
+
+
+def _bar_on(conn, symbol, day):
     row = conn.execute(
-        "SELECT COALESCE(SUM(pnl), 0) FROM paper_trades WHERE exit_date = ?", (date,)
+        "SELECT date, open, high, low, close FROM prices WHERE symbol = ? AND date = ?",
+        (symbol, day),
     ).fetchone()
-    return row[0]
+    return dict(row) if row else None
 
 
-def day_is_done(conn, date):
-    """True once the day's realised P&L has crossed either limit. Both are hard
-    stops: the profit target exists because giving back a good morning is the
-    more expensive mistake of the two."""
-    pnl = realised_pnl(conn, date)
+def _sessions_between(conn, symbol, start, through):
+    """Sessions strictly after `start` up to `through`, from the symbol's own bars.
+
+    Derived rather than stored: a held-bars counter would need updating on every
+    walk and would drift the first time a run died between the update and the
+    commit.
+    """
+    return conn.execute(
+        "SELECT COUNT(*) FROM prices WHERE symbol = ? AND date > ? AND date <= ?",
+        (symbol, start, through),
+    ).fetchone()[0]
+
+
+def realised_pnl(conn, day):
+    return conn.execute(
+        "SELECT COALESCE(SUM(pnl), 0) FROM paper_trades WHERE exit_date = ?", (day,)
+    ).fetchone()[0]
+
+
+def day_is_done(conn, day):
+    """True once the day's realised P&L has crossed either limit."""
+    pnl = realised_pnl(conn, day)
     if pnl <= -abs(risk_config.MAX_DAILY_LOSS):
         return True, f"daily loss limit hit ({pnl:,.0f})"
     if pnl >= risk_config.DAILY_PROFIT_TARGET:
@@ -55,135 +105,273 @@ def day_is_done(conn, date):
     return False, f"P&L {pnl:,.0f}"
 
 
-def _bars_after(conn, symbol, date):
-    return [bar for bar in features.load_bars(conn, symbol) if bar["date"] > date]
+# --- (1) proposals become positions at today's open ---------------------------
 
 
-def fill_new_signals(conn, dry_run=False):
-    """Fills 'new' signals at the next available open, subject to the position cap.
-    Signals older than risk_config.SIGNAL_VALID_SESSIONS bars are expired instead —
-    the setup that justified them has moved on."""
-    filled, expired = [], []
-    slots = risk_config.MAX_OPEN_POSITIONS - len(open_positions(conn))
+def fill_proposed(conn, day=None, dry_run=False):
+    """Enter yesterday's proposals at today's actual open.
 
-    rows = conn.execute(
-        "SELECT id, date, symbol, direction, entry, stop, target, size FROM signals "
-        "WHERE status = ? ORDER BY date, id",
-        (STATUS_NEW,),
+    The open is the first obtainable price after a signal written the previous
+    evening, which is exactly what the backtest assumes. Levels stay anchored to the
+    signal-time estimate — recomputing them from the fill would make the ledger
+    trade something the backtest never simulated.
+    """
+    day = day or today()
+    filled, skipped = [], []
+
+    proposals = conn.execute(
+        "SELECT id, date, symbol, rule, direction, entry, stop, target, size "
+        "FROM signals WHERE status = ? ORDER BY date, id",
+        (STATUS_PROPOSED,),
     ).fetchall()
 
-    for signal in (dict(r) for r in rows):
-        later = _bars_after(conn, signal["symbol"], signal["date"])
-        if not later:
-            continue  # not enough forward data yet — leave it 'new' and retry tomorrow
+    live = open_trades(conn)
+    slots = risk_config.MAX_OPEN_POSITIONS - len(live)
+    held_symbols = {t["symbol"] for t in live}
 
-        if len(later) > risk_config.SIGNAL_VALID_SESSIONS or slots <= 0:
-            reason = STATUS_EXPIRED if len(later) > risk_config.SIGNAL_VALID_SESSIONS else STATUS_SKIPPED
-            if not dry_run:
-                conn.execute("UPDATE signals SET status = ? WHERE id = ?", (reason, signal["id"]))
-            expired.append((signal["symbol"], reason))
+    def mark(signal_id, status):
+        if not dry_run:
+            conn.execute("UPDATE signals SET status = ? WHERE id = ?", (status, signal_id))
+
+    for signal in (dict(row) for row in proposals):
+        if signal["date"] >= day:
+            continue  # written this evening; it fills tomorrow, not tonight
+
+        bar = _bar_on(conn, signal["symbol"], day)
+        if not bar or not bar["open"]:
+            continue  # no session for this symbol today, so the proposal waits
+
+        waited = _sessions_between(conn, signal["symbol"], signal["date"], day)
+        if waited > risk_config.SIGNAL_VALID_SESSIONS:
+            skipped.append((signal["symbol"], "expired"))
+            mark(signal["id"], STATUS_EXPIRED)
+            continue
+        if slots <= 0 or signal["symbol"] in held_symbols:
+            skipped.append((signal["symbol"], "no slot or already held"))
+            mark(signal["id"], STATUS_SKIPPED)
             continue
 
-        fill_bar = later[0]
-        entry_price = fill_bar["open"] or fill_bar["close"]
+        fill = bar["open"]
+        # The same two refusals the backtest makes: an open past either level is not
+        # an entry, it is an instant outcome you chose to accept.
+        if fill <= signal["stop"] or fill >= signal["target"]:
+            side = "stop" if fill <= signal["stop"] else "target"
+            skipped.append((signal["symbol"], f"gapped past the {side} before entry"))
+            mark(signal["id"], STATUS_SKIPPED)
+            continue
+
         if not dry_run:
+            # INSERT OR IGNORE against the UNIQUE index on signal_id: a re-run finds
+            # the row already there and does nothing, rather than opening a second
+            # position on one signal.
             conn.execute(
-                "INSERT INTO paper_trades (signal_id, entry_date, entry_price) VALUES (?, ?, ?)",
-                (signal["id"], fill_bar["date"], round(entry_price, 2)),
+                "INSERT OR IGNORE INTO paper_trades "
+                "(signal_id, entry_date, entry_price, status) VALUES (?, ?, ?, ?)",
+                (signal["id"], day, round(fill, 2), TRADE_OPEN),
             )
-            conn.execute("UPDATE signals SET status = ? WHERE id = ?", (STATUS_TAKEN, signal["id"]))
-        filled.append((signal["symbol"], fill_bar["date"], round(entry_price, 2)))
+            mark(signal["id"], STATUS_TAKEN)
+        filled.append((signal["symbol"], signal["rule"], round(fill, 2), signal["size"]))
+        held_symbols.add(signal["symbol"])
         slots -= 1
 
     if not dry_run:
         conn.commit()
-    return filled, expired
+    return filled, skipped
 
 
-def close_open_positions(conn, dry_run=False):
-    """Walks each open position's bars since entry and closes it on the first stop,
-    target, or the hold limit. Stop wins a bar that contains both — daily bars
-    cannot tell us which came first, and assuming the good one flatters the ledger."""
-    closed = []
+# --- (2) walk open positions against today's bar ------------------------------
 
-    for position in open_positions(conn):
-        long = position["direction"] == "long"
-        sign = 1 if long else -1
 
-        for held, bar in enumerate(_bars_after(conn, position["symbol"], position["entry_date"]), start=1):
-            hit_stop = bar["low"] <= position["stop"] if long else bar["high"] >= position["stop"]
-            hit_target = bar["high"] >= position["target"] if long else bar["low"] <= position["target"]
+def walk_open(conn, day=None, dry_run=False):
+    """Test every open position against today's OHLC, using the backtest's own rule."""
+    day = day or today()
+    closed, still_open = [], []
 
-            if hit_stop:
-                exit_price, reason = position["stop"], EXIT_STOP
-            elif hit_target:
-                exit_price, reason = position["target"], EXIT_TARGET
-            elif held >= MAX_HOLD_BARS:
-                exit_price, reason = bar["close"], EXIT_TIME
-            else:
-                continue
+    for trade in open_trades(conn):
+        bar = _bar_on(conn, trade["symbol"], day)
+        if not bar:
+            still_open.append(trade)
+            continue
 
-            pnl = round((exit_price - position["entry_price"]) * sign * (position["size"] or 0), 2)
-            if not dry_run:
-                conn.execute(
-                    "UPDATE paper_trades SET exit_date = ?, exit_price = ?, exit_reason = ?, pnl = ? WHERE id = ?",
-                    (bar["date"], round(exit_price, 2), reason, pnl, position["id"]),
-                )
-            closed.append((position["symbol"], reason, pnl))
-            break
+        # Sessions held, counting the entry day as the first. The backtest's `held`
+        # starts at 1 on the fill bar, so the time stop triggers on the same session
+        # for both.
+        held = _sessions_between(conn, trade["symbol"], trade["entry_date"], day) + 1
+        exit_price, reason = backtest.resolve_exit(
+            bar, trade["stop"], trade["target"], held, MAX_HOLD_BARS
+        )
+        if exit_price is None:
+            still_open.append(trade)
+            continue
+
+        size = trade["size"] or 0
+        gross = (exit_price - trade["entry_price"]) * size
+        charges = costs.round_trip(
+            trade["entry_price"], exit_price, size, costs.DELIVERY
+        )["total"]
+
+        if not dry_run:
+            # `AND status = 'open'` makes the write itself idempotent: a second pass
+            # on the same evening matches no rows.
+            conn.execute(
+                """UPDATE paper_trades
+                   SET exit_date = ?, exit_price = ?, exit_reason = ?, pnl = ?,
+                       gross_pnl = ?, costs = ?, held_bars = ?, status = ?
+                   WHERE id = ? AND status = ?""",
+                (day, round(exit_price, 2), reason, round(gross - charges, 2),
+                 round(gross, 2), round(charges, 2), held, TRADE_CLOSED,
+                 trade["id"], TRADE_OPEN),
+            )
+        closed.append((trade["symbol"], trade["rule"], reason,
+                       round(gross - charges, 2), held))
 
     if not dry_run:
         conn.commit()
-    return closed
+    return closed, still_open
+
+
+# --- summaries ----------------------------------------------------------------
 
 
 def summary(conn):
     row = conn.execute(
-        """SELECT COUNT(*) AS closed,
-                  COALESCE(SUM(pnl), 0) AS total,
-                  COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) AS wins
-           FROM paper_trades WHERE exit_date IS NOT NULL"""
+        """SELECT COUNT(*) closed, COALESCE(SUM(pnl), 0) total,
+                  COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) wins,
+                  COALESCE(SUM(costs), 0) charges
+           FROM paper_trades WHERE status = ?""",
+        (TRADE_CLOSED,),
     ).fetchone()
     return {
         "closed": row["closed"],
-        "open": len(open_positions(conn)),
+        "open": len(open_trades(conn)),
         "wins": row["wins"],
         "total_pnl": round(row["total"], 2),
+        "costs": round(row["charges"], 2),
     }
 
 
-def run(dry_run=False, **kwargs):
+def per_rule_live(conn):
+    rows = conn.execute(
+        """SELECT s.rule,
+                  COUNT(*) trades,
+                  COALESCE(SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END), 0) wins,
+                  COALESCE(SUM(t.pnl), 0) net,
+                  COALESCE(AVG(t.pnl), 0) expectancy
+           FROM paper_trades t JOIN signals s ON s.id = t.signal_id
+           WHERE t.status = ? GROUP BY s.rule ORDER BY s.rule""",
+        (TRADE_CLOSED,),
+    ).fetchall()
+    return {
+        r["rule"]: {
+            "trades": r["trades"],
+            "wins": r["wins"],
+            "hit_rate": (r["wins"] / r["trades"]) if r["trades"] else None,
+            "net": round(r["net"], 2),
+            "expectancy": round(r["expectancy"], 2),
+        }
+        for r in rows
+    }
+
+
+def evaluation_days(conn):
+    first = conn.execute("SELECT MIN(entry_date) FROM paper_trades").fetchone()[0]
+    if not first:
+        return 0, None
+    return (date.fromisoformat(today()) - date.fromisoformat(first)).days, first
+
+
+# --- stage --------------------------------------------------------------------
+
+
+def run(dry_run=False, date=None, **kwargs):
+    day = date or today()
     conn = get_connection()
     try:
         init_db(conn)
-        date = today()
 
-        closed = close_open_positions(conn, dry_run=dry_run)
+        closed, _ = walk_open(conn, day, dry_run=dry_run)
+        for symbol, rule, reason, net, held in closed:
+            print(f"[journal] closed {symbol:<12} {rule:<22} {reason:<7} "
+                  f"{net:>10,.0f} after {held} session(s)")
 
-        done, why = day_is_done(conn, date)
+        done, why = day_is_done(conn, day)
         if done:
             print(f"[journal] no new fills — {why}")
-            filled, expired = [], []
+            filled = []
         else:
-            filled, expired = fill_new_signals(conn, dry_run=dry_run)
-            for symbol, fill_date, price in filled:
-                print(f"[journal] filled {symbol:<12} @ {price:>9.2f} on {fill_date}")
-            for symbol, reason in expired:
-                print(f"[journal] {reason} {symbol}")
-            # Again, because a signal old enough to fill this run may also have hit
-            # its stop or target since. Without this the exit waits for tomorrow's
-            # run, which matters when catching up on a gap in the schedule.
-            closed += close_open_positions(conn, dry_run=dry_run)
+            filled, skipped = fill_proposed(conn, day, dry_run=dry_run)
+            for symbol, rule, fill, size in filled:
+                print(f"[journal] opened {symbol:<12} {rule:<22} @ {fill:>9.2f} x{size}")
+            for symbol, reason in skipped:
+                print(f"[journal] skipped {symbol:<12} {reason}")
 
-        for symbol, reason, pnl in closed:
-            print(f"[journal] closed {symbol:<12} {reason:<7} {pnl:>10,.0f}")
+        # Positions opened just now are tested against today's bar too, so a signal
+        # that gaps to its stop on entry day resolves tonight — which is what the
+        # backtest does on its own fill bar.
+        if filled:
+            same_day, _ = walk_open(conn, day, dry_run=dry_run)
+            for symbol, rule, reason, net, held in same_day:
+                print(f"[journal] closed {symbol:<12} {rule:<22} {reason:<7} "
+                      f"{net:>10,.0f} on entry day")
+            closed += same_day
 
         stats = summary(conn)
         suffix = " (dry run, nothing written)" if dry_run else ""
-        print(
-            f"[journal] {len(filled)} filled, {len(closed)} closed, {stats['open']} open | "
-            f"lifetime {stats['closed']} trades, {stats['wins']} wins, P&L {stats['total_pnl']:,.0f}{suffix}"
-        )
+        print(f"[journal] {len(filled)} opened, {len(closed)} closed, {stats['open']} open | "
+              f"lifetime {stats['closed']} trades, {stats['wins']} wins, "
+              f"net {stats['total_pnl']:,.0f}{suffix}")
         return stats
+    finally:
+        conn.close()
+
+
+def report(dry_run=False, **kwargs):
+    """--stage journal-report: is the live ledger behaving like the backtest?"""
+    from src import rules_config, signals
+
+    conn = get_connection()
+    try:
+        init_db(conn)
+        stats = summary(conn)
+        days, first = evaluation_days(conn)
+        live = per_rule_live(conn)
+
+        print(f"\n{'=' * 78}\nPAPER LEDGER — live results beside the backtest\n{'=' * 78}")
+        if first:
+            print(f"evaluation period: {days} day(s) since {first}")
+        else:
+            print("evaluation period: not started — no paper trade has been entered yet.")
+        print(f"cumulative net P&L: {stats['total_pnl']:,.0f} over {stats['closed']} closed "
+              f"trade(s), {stats['wins']} winner(s), {stats['open']} still open")
+        print(f"costs paid: {stats['costs']:,.0f}")
+
+        header = (f"{'rule':<24} {'live n':>7} {'live hit':>9} {'backtest hit':>13} "
+                  f"{'gap':>8} {'live exp':>9}")
+        print(f"\n{header}\n{'-' * len(header)}")
+        for rule in signals.RULES:
+            measured = live.get(rule)
+            expected = rules_config.RULE_BACKTEST_HIT_RATE.get(rule)
+            live_hit = measured["hit_rate"] if measured else None
+            gap = None
+            if live_hit is not None and expected is not None:
+                gap = live_hit - expected
+
+            count = measured["trades"] if measured else 0
+            live_text = f"{live_hit:.1%}" if live_hit is not None else "-"
+            expected_text = f"{expected:.1%}" if expected is not None else "-"
+            gap_text = f"{gap:+.1%}" if gap is not None else "-"
+            exp_text = f"{measured['expectancy']:,.0f}" if measured else "-"
+            print(f"{rule:<24} {count:>7} {live_text:>9} {expected_text:>13} "
+                  f"{gap_text:>8} {exp_text:>9}")
+        print("-" * len(header))
+        print(f"backtest hit rates: {rules_config.RULE_BACKTEST_HIT_RATE_BASIS}.")
+
+        # A live hit rate on a handful of trades says nothing, and the temptation to
+        # read it anyway is exactly why the count sits beside it.
+        thin = [r for r, m in live.items() if m["trades"] < 30]
+        if thin:
+            print(f"under 30 trades — not yet evidence: {', '.join(sorted(thin))}")
+        print()
+        return {"summary": stats, "per_rule": live, "days": days}
     finally:
         conn.close()

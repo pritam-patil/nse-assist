@@ -124,7 +124,10 @@ CREATE TABLE IF NOT EXISTS runs (
 _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_signals_date ON signals (date)",
     "CREATE INDEX IF NOT EXISTS idx_signals_status ON signals (status)",
-    "CREATE INDEX IF NOT EXISTS idx_paper_trades_signal ON paper_trades (signal_id)",
+    # UNIQUE, not just indexed: one signal can produce at most one paper trade, and
+    # the database is what enforces it. Re-running the evening chain must not open a
+    # second position because a Python guard was skipped or raced.
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_signal ON paper_trades (signal_id)",
     "CREATE INDEX IF NOT EXISTS idx_runs_date ON runs (date)",
 )
 
@@ -161,6 +164,12 @@ def init_db(conn=None, db_path=None):
         conn.execute(_FUND_METRICS_SCHEMA)
         conn.execute(_RUNS_SCHEMA)
         _ensure_column(conn, "signals", "confirming_rules", "TEXT")
+        # Paper trades grew to mirror what the backtest records per trade, so the
+        # two can be compared field by field rather than only in aggregate.
+        _ensure_column(conn, "paper_trades", "status", "TEXT DEFAULT 'open'")
+        _ensure_column(conn, "paper_trades", "gross_pnl", "REAL")
+        _ensure_column(conn, "paper_trades", "costs", "REAL")
+        _ensure_column(conn, "paper_trades", "held_bars", "INTEGER")
         for statement in _INDEXES:
             conn.execute(statement)
         conn.commit()

@@ -5,7 +5,7 @@ import sys
 import traceback
 
 from src import backfill, backtest, brief, deliver, doctor, features, funds, ingest, journal
-from src import runlog
+from src import journal_report, runlog
 from src import signals, verify_data, walkforward
 from src import db
 
@@ -19,6 +19,7 @@ STAGES = {
     "verify-data": verify_data,
     "walkforward": walkforward,
     "journal": journal,
+    "journal-report": journal_report,
     "funds": funds,
     "deliver": deliver,
     "brief": brief,

@@ -101,6 +101,24 @@ RULE_ENABLED = {
     "volume_breakout": False,
 }
 
+# Hit rate each rule achieved in the backtest, for the live-versus-backtest column
+# in --stage journal-report. Separate from RULE_EXPECTANCY because a rule can match
+# its expected hit rate while missing its expectancy badly, and the two failures
+# mean different things: a hit-rate match with an expectancy miss says the entries
+# are fine and the exits or costs are not.
+#
+# INTERIM, FULL-SAMPLE. These come from the Burst 7 per-rule replay over the whole
+# history, so they are the optimistic version — the same caveat RULE_EXPECTANCY
+# carried before walk-forward overwrote it. Walk-forward should replace them with
+# out-of-sample rates, and until it does, a live rate matching these has matched a
+# flattered target.
+RULE_BACKTEST_HIT_RATE_BASIS = "full-sample Burst 7, interim — not yet out-of-sample"
+RULE_BACKTEST_HIT_RATE = {
+    "momentum_continuation": 0.472,
+    "oversold_reversion": 0.524,
+    "volume_breakout": 0.478,
+}
+
 # Applied when expectancies tie, which is currently always. A tighter stop means
 # less risked per share for the same ATR view, so the same rupee budget buys more
 # shares and the position is denser in the setup rather than in the noise.

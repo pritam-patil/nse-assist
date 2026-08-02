@@ -119,6 +119,33 @@ def benchmark_return(conn, start, end):
 # --- one position -------------------------------------------------------------
 
 
+def resolve_exit(bar, stop, target, held, max_hold=MAX_HOLD_BARS):
+    """Does this bar close the position, and at what price? (price, reason) or (None, None).
+
+    THE SINGLE DEFINITION OF A FILL. journal.py imports this rather than owning a
+    copy, because the moment the two disagree the live-versus-backtest comparison
+    stops meaning anything — and it would not fail, it would just quietly compare
+    two different strategies. Before this existed journal.py had its own exit loop
+    and a 20-session hold against the backtest's 10.
+
+    Order is load-bearing. The stop is tested first, so a bar whose range contains
+    both levels resolves as a stop: daily data cannot say which came first, and
+    picking the good one flatters every ambiguous day for the life of the strategy.
+    A gap through a level fills at the open, which is worse than the stop and better
+    than the target — that asymmetry is not a choice, it is what a resting order
+    actually does.
+    """
+    low, high, opening = bar["low"], bar["high"], bar["open"]
+
+    if low is not None and low <= stop:
+        return (opening if (opening is not None and opening <= stop) else stop), EXIT_STOP
+    if high is not None and high >= target:
+        return (opening if (opening is not None and opening >= target) else target), EXIT_TARGET
+    if held >= max_hold:
+        return bar["close"], EXIT_TIME
+    return None, None
+
+
 def simulate_position(bars, signal_index, plan, max_hold=MAX_HOLD_BARS):
     """Fill at the next open, walk forward, exit by the rules in the docstring.
 
@@ -146,23 +173,18 @@ def simulate_position(bars, signal_index, plan, max_hold=MAX_HOLD_BARS):
 
     for offset, bar in enumerate(window):
         held = offset + 1
-        low, high, opening = bar["low"], bar["high"], bar["open"]
-        hit_stop = low is not None and low <= stop
-        hit_target = high is not None and high >= target
-
-        if hit_stop:
-            # Checked first, so a day whose range covers both resolves as a stop.
-            exit_price = opening if (opening is not None and opening <= stop) else stop
-            exit_reason = EXIT_STOP
-        elif hit_target:
-            exit_price = opening if (opening is not None and opening >= target) else target
-            exit_reason = EXIT_TARGET
-        else:
+        exit_price, exit_reason = resolve_exit(bar, stop, target, held, max_hold)
+        if exit_price is None:
             continue
         exit_date = bar["date"]
         break
 
     if exit_price is None:
+        # End of the sample, not a time stop: history ran out before the position
+        # resolved. Marking it out at the last close keeps an unfinished trade from
+        # being silently dropped, which would bias the sample toward trades that
+        # happened to finish. journal.py deliberately does NOT do this — a live
+        # position with sessions still to run stays open.
         last = window[-1]
         exit_price, exit_reason, exit_date = last["close"], EXIT_TIME, last["date"]
         held = len(window)
