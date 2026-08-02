@@ -1,0 +1,19 @@
+#!/bin/sh
+# Blocks a commit that stages a credential.
+#
+# Version-controlled rather than living in .git/hooks, which is not committed and
+# so protects only the machine it was written on. Enable with:
+#
+#     git config core.hooksPath .githooks
+#
+# Scans STAGED content, not the working tree — they differ whenever a file is
+# edited after `git add`, and it is the staged version that gets committed.
+set -e
+
+cd "$(git rev-parse --show-toplevel)"
+
+PYTHON="./venv/bin/python"
+[ -x "$PYTHON" ] || PYTHON="$(command -v python3 || command -v python)"
+[ -n "$PYTHON" ] || { echo "pre-commit: no python found; skipping secret scan" >&2; exit 0; }
+
+"$PYTHON" -m src.secrets_guard --staged

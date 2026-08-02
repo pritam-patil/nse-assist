@@ -59,6 +59,13 @@ GST = 0.18
 # positions are inefficient.
 DP_CHARGE_PER_SELL = 15.93  # ₹13.50 + 18% GST
 
+# Slippage, charged on each side. Not a fee anyone bills you — it is the gap between
+# the price a backtest assumes and the price a market order actually gets: the
+# spread, plus whatever the book moves while the order crosses it. Modelled as a
+# named cost line rather than folded into the fill price so it stays visible; a
+# backtest that omits it quietly assumes every order fills at the printed price.
+SLIPPAGE_PER_SIDE = 0.0005  # 0.05%
+
 DELIVERY = "delivery"
 INTRADAY = "intraday"
 
@@ -75,7 +82,7 @@ def _brokerage(turnover, segment):
     return min(BROKERAGE_INTRADAY_FLAT, turnover * BROKERAGE_INTRADAY_PCT)
 
 
-def round_trip(entry_price, exit_price, size, segment=DELIVERY):
+def round_trip(entry_price, exit_price, size, segment=DELIVERY, include_slippage=True):
     """Every charge on one complete round trip, itemised. All amounts in INR.
 
     Both legs are priced on their own turnover rather than on an average, because
@@ -84,8 +91,9 @@ def round_trip(entry_price, exit_price, size, segment=DELIVERY):
     if size <= 0:
         # Every key the populated path returns. A partial dict here would blow up
         # any caller that formats the full shape — the same trap summarize() had.
-        return {"brokerage": 0.0, "stt": 0.0, "exchange": 0.0, "sebi": 0.0, "stamp": 0.0,
-                "gst": 0.0, "dp": 0.0, "total": 0.0, "turnover": 0.0, "breakeven_pct": 0.0}
+        return {"slippage": 0.0, "brokerage": 0.0, "stt": 0.0, "exchange": 0.0, "sebi": 0.0,
+                "stamp": 0.0, "gst": 0.0, "dp": 0.0, "total": 0.0, "turnover": 0.0,
+                "breakeven_pct": 0.0}
 
     buy_turnover = entry_price * size
     sell_turnover = exit_price * size
@@ -105,9 +113,12 @@ def round_trip(entry_price, exit_price, size, segment=DELIVERY):
     exchange = turnover * EXCHANGE_TXN
     sebi = turnover * SEBI_TURNOVER
     gst = (brokerage + exchange + sebi) * GST
+    # Both sides: the spread is crossed getting in and again getting out.
+    slippage = turnover * SLIPPAGE_PER_SIDE if include_slippage else 0.0
 
-    total = brokerage + stt + exchange + sebi + stamp + gst + dp
+    total = brokerage + stt + exchange + sebi + stamp + gst + dp + slippage
     return {
+        "slippage": round(slippage, 2),
         "brokerage": round(brokerage, 2),
         "stt": round(stt, 2),
         "exchange": round(exchange, 2),
@@ -138,6 +149,7 @@ def as_dict():
         "stamp_delivery": f"{STAMP_DELIVERY:.3%} buy",
         "gst": f"{GST:.0%} on services",
         "dp_per_sell": DP_CHARGE_PER_SELL,
+        "slippage_per_side": f"{SLIPPAGE_PER_SIDE:.3%}",
     }
 
 
@@ -153,5 +165,6 @@ def describe_example(notional=25_000):
     out = round_trip(price, price, size, DELIVERY)
     return (
         f"delivery round trip on {notional:,} notional costs {out['total']:,.0f} "
-        f"({out['breakeven_pct']:.2%} to break even); STT {out['stt']:.0f}, DP {out['dp']:.0f}"
+        f"({out['breakeven_pct']:.2%} to break even); STT {out['stt']:.0f}, "
+        f"slip {out['slippage']:.0f}, DP {out['dp']:.0f}"
     )

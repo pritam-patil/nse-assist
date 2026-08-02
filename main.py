@@ -5,7 +5,7 @@ import sys
 import traceback
 
 from src import backfill, backtest, deliver, doctor, features, funds, ingest, journal, runlog
-from src import signals, verify_data
+from src import signals, verify_data, walkforward
 from src import db
 
 STAGES = {
@@ -16,6 +16,7 @@ STAGES = {
     "backtest": backtest,
     "backfill": backfill,
     "verify-data": verify_data,
+    "walkforward": walkforward,
     "journal": journal,
     "funds": funds,
     "deliver": deliver,
@@ -45,6 +46,12 @@ def parse_args():
         "--dry-run",
         action="store_true",
         help="Run without writing to the database or sending to Telegram.",
+    )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help="Walkforward only: write the out-of-sample verdicts into rules_config.py. "
+        "Without it the stage only measures and reports.",
     )
     parser.add_argument(
         "--search",
@@ -88,6 +95,7 @@ def main():
                 force=args.force,
                 search_term=args.search,
                 history=args.history,
+                apply=args.apply,
             )
             runlog.log(name, "ok")
         except Exception as exc:

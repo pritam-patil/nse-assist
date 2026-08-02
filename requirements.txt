@@ -4,3 +4,8 @@ requests
 # Fallback price source when NSE's bhavcopy is unreachable or a backfill is too
 # large to fetch a day at a time. Pulls in pandas, which nothing else here needs.
 yfinance
+
+# Used only to assemble the tidy feature frame; the indicator arithmetic in
+# features.py is plain stdlib so it stays testable without a DataFrame in the way.
+# Already a transitive dependency of yfinance, pinned here because we import it.
+pandas
