@@ -108,7 +108,9 @@ RULES = {
     BREAKOUT: rule_volume_breakout,
 }
 
-ENABLED_RULES = tuple(RULES)
+# Derived from the config flag so a walk-forward verdict takes effect without an
+# edit here — and so what is enabled has exactly one definition.
+ENABLED_RULES = tuple(r for r in RULES if rules_config.RULE_ENABLED.get(r, True))
 # Long only. A cash-segment short cannot be carried overnight — see costs.py — and
 # every signal here is held for days.
 ENABLED_DIRECTIONS = (LONG,)
@@ -156,20 +158,28 @@ def evaluate(f, rules=None, directions=None):
 # --- levels and size ----------------------------------------------------------
 
 
-def levels(f, direction=LONG):
+def levels(f, direction=LONG, stop_multiple=None, target_multiple=None):
     """Entry, stop, target and size for one candidate, or None if it cannot be sized.
 
     Long-only, so the stop is below and the target above. Both are ATR multiples:
     the same rupee risk then buys a tighter stop on a quiet stock and a wider one on
     a volatile one, which is the entire point of sizing off volatility.
+
+    The multiples can be overridden so a walk-forward grid can vary geometry without
+    mutating module state. Mutating rules_config for a sweep would leak whichever
+    cell ran last into every later caller, including the live scan in the same
+    process — a bug that produces plausible numbers rather than an error.
     """
     entry = f.get("close")
     atr = f.get("atr_14")
     if not entry or not atr or direction != LONG:
         return None
 
-    stop = entry - atr * rules_config.STOP_ATR_MULTIPLE
-    target = entry + atr * rules_config.TARGET_ATR_MULTIPLE
+    stop_multiple = rules_config.STOP_ATR_MULTIPLE if stop_multiple is None else stop_multiple
+    target_multiple = (rules_config.TARGET_ATR_MULTIPLE if target_multiple is None
+                       else target_multiple)
+    stop = entry - atr * stop_multiple
+    target = entry + atr * target_multiple
     risk_per_share = entry - stop
     if risk_per_share <= 0 or stop <= 0:
         return None

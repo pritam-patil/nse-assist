@@ -81,11 +81,24 @@ MAX_ABS_DAILY_RETURN = 0.20              # a 20% day is news; wait for it to set
 #
 # Source: --stage backtest, per-rule isolated replay, 2023-07-13 to 2026-07-31,
 # 99 symbols, net of costs and slippage.
-RULE_EXPECTANCY_BASIS = "full-sample (Burst 7), interim"
+RULE_EXPECTANCY_BASIS = "out-of-sample walk-forward"
 RULE_EXPECTANCY = {
-    "momentum_continuation": -72.0,   # 1,230 trades, PF 0.85 — negative, and a large sample
-    "oversold_reversion": 121.0,      #   105 trades, PF 1.33 — the only positive rule
-    "volume_breakout": -106.0,        #   613 trades, PF 0.79 — negative, large sample
+    "momentum_continuation": -257.2,
+    "oversold_reversion": -669.9,
+    "volume_breakout": -662.2,
+}
+
+# Which rules the live scan may emit. A losing rule is disabled here rather than
+# deleted: the record of what was tried and failed is worth more than the tidiness
+# of removing it, and a deleted rule gets reinvented in six months by someone who
+# does not know it was already measured.
+#
+# Set by --stage walkforward --apply from out-of-sample verdicts. Left all-True
+# until a walk-forward run has actually judged them.
+RULE_ENABLED = {
+    "momentum_continuation": False,
+    "oversold_reversion": False,
+    "volume_breakout": False,
 }
 
 # Applied when expectancies tie, which is currently always. A tighter stop means

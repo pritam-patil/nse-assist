@@ -90,13 +90,47 @@ class DedupeTestCase(unittest.TestCase):
             rules_config.RULE_EXPECTANCY.clear()
             rules_config.RULE_EXPECTANCY.update(original)
 
-    def test_measured_expectancy_now_drives_the_choice(self):
-        """With Burst 7 values in place, the positive rule must win a symbol it
-        shares with a negative one, whatever the stops look like."""
-        loser = candidate("AAA", signals.MOMENTUM, stop=990.0)   # tighter stop...
-        winner = candidate("AAA", signals.REVERSION, stop=900.0)
-        result = signals.assemble_portfolio([loser, winner])
-        self.assertEqual(result["portfolio"][0]["rule"], signals.REVERSION)
+    def test_measured_expectancy_drives_the_choice(self):
+        """The better-expectancy rule wins a shared symbol, whatever the stops look
+        like — asserted against values this test sets, not values it inherits.
+
+        This is the third time a test here has been written against whatever
+        rules_config happened to hold. Each time the config changed for a real
+        reason and the test failed for an unreal one, which trains you to fix the
+        test rather than read it. Any test naming a *mechanism* has to pin the
+        inputs that mechanism reads.
+        """
+        original = dict(rules_config.RULE_EXPECTANCY)
+        try:
+            rules_config.RULE_EXPECTANCY[signals.MOMENTUM] = -500.0
+            rules_config.RULE_EXPECTANCY[signals.REVERSION] = -10.0
+            loser = candidate("AAA", signals.MOMENTUM, stop=990.0)   # tighter stop...
+            winner = candidate("AAA", signals.REVERSION, stop=900.0)
+            result = signals.assemble_portfolio([loser, winner])
+            self.assertEqual(result["portfolio"][0]["rule"], signals.REVERSION)
+        finally:
+            rules_config.RULE_EXPECTANCY.clear()
+            rules_config.RULE_EXPECTANCY.update(original)
+
+    def test_assembly_works_with_every_rule_disabled(self):
+        """The state a walk-forward can legitimately produce.
+
+        assemble_portfolio() operates on candidates it is handed, so it must not
+        care whether the rules that produced them are enabled — but nothing had ever
+        exercised the path, and an empty enabled set is exactly where a max() over
+        an empty sequence hides.
+        """
+        original = dict(rules_config.RULE_ENABLED)
+        try:
+            for rule in rules_config.RULE_ENABLED:
+                rules_config.RULE_ENABLED[rule] = False
+            self.assertEqual(signals.evaluate({"close": 100.0, "atr_14": 2.0}), [])
+            result = signals.assemble_portfolio([])
+            self.assertEqual(result["portfolio"], [])
+            self.assertEqual(result["risk"], 0)
+        finally:
+            rules_config.RULE_ENABLED.clear()
+            rules_config.RULE_ENABLED.update(original)
 
     def test_expectancy_outranks_the_tiebreak(self):
         """When Burst 8 fills in measured expectancies, they must dominate."""
