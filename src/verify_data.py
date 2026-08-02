@@ -28,9 +28,8 @@ there. This is the only place that failure is detectable.
 from collections import defaultdict
 
 from src import universe
-from src.backfill import SOURCE_ADJUSTED
 from src.db import get_connection, init_db
-from src.ingest import SOURCE_BHAVCOPY
+from src.ingest import SOURCE_BASIS
 
 # A date counts as a session when at least this fraction of symbols have a bar.
 SESSION_QUORUM = 0.5
@@ -42,8 +41,8 @@ GAP_THRESHOLD_SESSIONS = 5
 # smallest common split ratio (1:2 shows up as -50%).
 JUMP_THRESHOLD = 0.25
 
-RAW_SOURCES = frozenset({SOURCE_BHAVCOPY})
-ADJUSTED_SOURCES = frozenset({SOURCE_ADJUSTED})
+RAW_SOURCES = frozenset(s for s, b in SOURCE_BASIS.items() if b == "raw")
+ADJUSTED_SOURCES = frozenset(s for s, b in SOURCE_BASIS.items() if b == "adjusted")
 
 
 def load(conn, symbols):

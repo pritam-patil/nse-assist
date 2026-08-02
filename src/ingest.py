@@ -23,8 +23,16 @@ backfill too large to fetch a day at a time. Two things about it are load-bearin
                       open=high=low=close. Stored, those flatten RSI and drag the
                       20-day average volume down, so they are rejected on sight.
 
-Sources are never mixed for a date: bhavcopy overwrites a day yfinance filled, and
-yfinance never overwrites a day bhavcopy filled. See store_bars().
+Adjustment bases are never mixed within a date. Which source wins is SOURCE_RANK,
+and split-adjusted history outranks even the exchange's own file — see the comment
+there for why a raw series cannot back a lookback window.
+
+This module also recovers sessions the price feed simply lacks. yfinance emits a
+zero-volume flat bar for a session it has no data for, byte-identical to the
+placeholder it emits for a genuine holiday; is_phantom() rejects both, correctly,
+which means the feed itself can never tell us a trading day went missing. Only the
+exchange can, so fill_gaps() asks it. See fill_session() for why those recovered
+bars are rescaled rather than stored raw.
 """
 
 import csv
@@ -43,6 +51,10 @@ SOURCE_YFINANCE = "yfinance"
 # Defined here rather than in backfill.py so store_bars() can rank it without
 # importing the module that writes it.
 SOURCE_ADJUSTED = "yfinance-adj"
+# Bars recovered from bhavcopy for a session the adjusted feed lacks, rescaled onto
+# the adjusted basis. Same rank as SOURCE_ADJUSTED because it is the same basis —
+# the label records where the numbers came from, not how they compare.
+SOURCE_BHAVCOPY_ADJUSTED = "bhavcopy-adj"
 
 # Which source wins when two of them have bars for the same (symbol, date).
 #
@@ -64,6 +76,17 @@ SOURCE_RANK = {
     SOURCE_YFINANCE: 1,
     SOURCE_BHAVCOPY: 2,
     SOURCE_ADJUSTED: 3,
+    SOURCE_BHAVCOPY_ADJUSTED: 3,
+}
+
+# What a source says about comparability. Two sources sharing a basis can sit in
+# one series; two bases cannot. This is what the integrity check actually cares
+# about — the source label is only a provenance note.
+SOURCE_BASIS = {
+    SOURCE_YFINANCE: "raw",
+    SOURCE_BHAVCOPY: "raw",
+    SOURCE_ADJUSTED: "adjusted",
+    SOURCE_BHAVCOPY_ADJUSTED: "adjusted",
 }
 
 # Inlined into the conflict clause below. An unknown source ranks 0, so anything
@@ -150,7 +173,10 @@ def nse_session():
 def fetch_bhavcopy(day, session=None):
     """Parsed bars for one session as {symbol: bar}. Raises NoSession for a
     non-trading day and RuntimeError when NSE will not serve the file."""
-    if not calendar.is_trading_day(day):
+    # Only consult the calendar for the year it covers. Outside that the archive
+    # itself is the arbiter — a 404 means there was no session — and refusing to ask
+    # would make older gaps permanently unrecoverable.
+    if calendar.covers(day) and not calendar.is_trading_day(day):
         raise NoSession(f"{day} is not a session ({calendar.describe(day)})")
 
     session = session or nse_session()
@@ -329,6 +355,7 @@ def store_bars(conn, rows):
     Expressed in the conflict clause rather than in Python so a concurrent writer
     cannot interleave a read-then-write and lose the rule.
     """
+    before = conn.total_changes
     conn.executemany(
         f"""INSERT INTO prices (symbol, date, open, high, low, close, volume, source)
             VALUES (:symbol, :date, :open, :high, :low, :close, :volume, :source)
@@ -342,7 +369,10 @@ def store_bars(conn, rows):
         ],
     )
     conn.commit()
-    return len(rows)
+    # Rows actually written, not rows offered. The conflict clause silently drops a
+    # write that loses on rank, so len(rows) would report imaginary work — which is
+    # exactly how "100 bars stored" gets printed for a batch that stored nothing.
+    return conn.total_changes - before
 
 
 def purge_phantom_bars(conn):
@@ -372,11 +402,17 @@ def dates_needing_upgrade(conn, window_sessions=None):
     re-fetch history that is not going to change.
     """
     window_sessions = window_sessions or BHAVCOPY_UPGRADE_WINDOW
+    # Only dates bhavcopy could actually win. Offering it a date already held by a
+    # higher-ranked source is a guaranteed-rejected write, and re-fetching those
+    # every run means ten pointless NSE requests a day.
+    beatable = [name for name, rank in SOURCE_RANK.items() if rank < SOURCE_RANK[SOURCE_BHAVCOPY]]
+    if not beatable:
+        return []
     rows = conn.execute(
-        """SELECT DISTINCT date FROM prices
-           WHERE source IS NOT ? AND source != ?
-           ORDER BY date DESC LIMIT ?""",
-        (SOURCE_BHAVCOPY, SOURCE_BHAVCOPY, window_sessions),
+        f"""SELECT DISTINCT date FROM prices
+            WHERE source IN ({','.join('?' * len(beatable))})
+            ORDER BY date DESC LIMIT ?""",
+        (*beatable, window_sessions),
     ).fetchall()
     return sorted(date.fromisoformat(row["date"]) for row in rows)
 
@@ -397,6 +433,195 @@ def latest_stored_date(conn, symbols):
         return None
     latest = sorted(row["latest"] for row in rows if row["latest"])
     return latest[len(latest) // 2] if latest else None
+
+
+# --- gap filling --------------------------------------------------------------
+
+# A session is incomplete when fewer than this share of the symbols that were
+# listed at the time have a bar. Well below 1.0 so a single genuinely suspended
+# stock does not trigger a refetch of the whole day.
+SESSION_COVERAGE_FLOOR = 0.9
+
+# Bounded per run: each gap costs two NSE requests, and an unbounded loop over a
+# long history would hammer the archive on a schedule.
+MAX_GAP_FILLS = 5
+
+
+def incomplete_sessions(conn, symbols, floor=SESSION_COVERAGE_FLOOR):
+    """Stored dates whose coverage is short, newest first.
+
+    Expected coverage is per-date: only symbols whose own history brackets the date
+    are counted, so a 2022 session is not marked incomplete for lacking a company
+    that listed in 2024.
+
+    This catches the partial holes. A session missing for *every* symbol leaves no
+    row to count and is invisible here — that one is found by comparing stored dates
+    against the calendar, which run() does separately.
+    """
+    spans = {
+        r["symbol"]: (r["lo"], r["hi"])
+        for r in conn.execute(
+            "SELECT symbol, MIN(date) lo, MAX(date) hi FROM prices "
+            f"WHERE symbol IN ({','.join('?' * len(symbols))}) GROUP BY symbol",
+            list(symbols),
+        )
+    }
+    actual = dict(
+        conn.execute(
+            "SELECT date, COUNT(*) FROM prices "
+            f"WHERE symbol IN ({','.join('?' * len(symbols))}) GROUP BY date",
+            list(symbols),
+        ).fetchall()
+    )
+
+    short = []
+    for day, count in actual.items():
+        expected = sum(1 for lo, hi in spans.values() if lo and lo <= day <= hi)
+        if expected and count < expected * floor:
+            short.append((day, count, expected))
+    return sorted(short, reverse=True)
+
+
+def _adjustment_ratios(conn, raw_bars, reference_day):
+    """Per-symbol adjusted/raw ratio measured on `reference_day`.
+
+    Bhavcopy carries raw traded prices. Dropping those straight into an adjusted
+    series would put a step wherever the symbol has since split — filling a 2025 gap
+    for KOTAKBANK with a raw bar would leave it five times its neighbours. So the
+    ratio is measured against a session where both a raw and a stored adjusted price
+    exist, and the recovered bars are scaled by it.
+
+    Measured per symbol, because each has its own split history, and on the nearest
+    session, so no corporate action falls between the two dates.
+    """
+    stored = {
+        r["symbol"]: r["close"]
+        for r in conn.execute(
+            "SELECT symbol, close FROM prices WHERE date = ?", (reference_day.isoformat(),)
+        )
+    }
+    ratios = {}
+    for symbol, bar in raw_bars.items():
+        adjusted, raw = stored.get(symbol), bar["close"]
+        if adjusted and raw:
+            ratios[symbol] = adjusted / raw
+    return ratios
+
+
+def fill_session(conn, day, symbols, session=None, dry_run=False):
+    """Recovers one session from bhavcopy, rescaled onto the adjusted basis.
+
+    Returns (stored, skipped_symbols). Raises when the reference session needed for
+    the ratio cannot be fetched — filling without it would silently write raw prices
+    into an adjusted series, which is worse than leaving the gap.
+    """
+    session = session or nse_session()
+    wanted = set(symbols)
+
+    target = fetch_bhavcopy(day, session=session)
+    time.sleep(PAUSE_BETWEEN_DAYS_SECONDS)
+
+    # Nearest stored session after `day`, for the ratio.
+    row = conn.execute("SELECT MIN(date) FROM prices WHERE date > ?", (day.isoformat(),)).fetchone()
+    if not row or not row[0]:
+        raise RuntimeError(f"no later session stored to measure an adjustment ratio against")
+    reference = date.fromisoformat(row[0])
+
+    reference_raw = fetch_bhavcopy(reference, session=session)
+    ratios = _adjustment_ratios(conn, reference_raw, reference)
+    if not ratios:
+        raise RuntimeError(f"no overlapping symbols on {reference} to measure a ratio")
+
+    rows, skipped = [], []
+    for symbol in sorted(wanted & set(target)):
+        ratio = ratios.get(symbol)
+        if ratio is None:
+            skipped.append(symbol)
+            continue
+        bar = target[symbol]
+        rows.append(
+            (
+                symbol,
+                {
+                    "date": bar["date"],
+                    "open": round(bar["open"] * ratio, 2),
+                    "high": round(bar["high"] * ratio, 2),
+                    "low": round(bar["low"] * ratio, 2),
+                    "close": round(bar["close"] * ratio, 2),
+                    # Volume is a share count, not a price — a split changes it too,
+                    # but the adjusted feed's own volumes are left untouched by
+                    # yfinance, so leaving this raw keeps it consistent with them.
+                    "volume": bar["volume"],
+                },
+                SOURCE_BHAVCOPY_ADJUSTED,
+            )
+        )
+
+    spread = sorted(ratios.values())
+    median_ratio = spread[len(spread) // 2]
+    if dry_run:
+        print(f"[ingest] {day}: {len(rows)} bar(s) recoverable (dry run), median ratio {median_ratio:.4f}")
+        return 0, skipped
+    stored = store_bars(conn, rows)
+    print(
+        f"[ingest] {day}: recovered {stored} bar(s) from bhavcopy, rescaled via {reference} "
+        f"(median ratio {median_ratio:.4f})"
+    )
+    return stored, skipped
+
+
+def fill_gaps(conn, symbols, session=None, dry_run=False, limit=MAX_GAP_FILLS):
+    """Recovers sessions the price feed dropped, from the exchange's own file.
+
+    Two shapes, found two ways. A partially missing session still has rows, so it is
+    found by coverage. A wholly missing one leaves nothing to count, so it is found
+    by asking the calendar which sessions should exist and diffing against what does.
+
+    The wholly-missing case is not hypothetical: yfinance emits a zero-volume flat
+    bar for a session it lacks, which is byte-identical to the placeholder it emits
+    for a real holiday. is_phantom() rejects both, correctly — and the price feed
+    therefore cannot tell us the difference. Only the exchange can.
+    """
+    session = session or nse_session()
+    gaps = []
+
+    for day, count, expected in incomplete_sessions(conn, symbols):
+        parsed = date.fromisoformat(day)
+        if calendar.covers(parsed) and calendar.is_trading_day(parsed):
+            gaps.append((parsed, f"{count}/{expected} symbols"))
+        elif not calendar.covers(parsed):
+            # Outside the calendar's year the exchange file is still the arbiter;
+            # a 404 below simply means it was not a session after all.
+            gaps.append((parsed, f"{count}/{expected} symbols, outside calendar"))
+
+    stored_dates = {
+        r[0] for r in conn.execute("SELECT DISTINCT date FROM prices WHERE date >= ?",
+                                   (calendar.COVERAGE_START.isoformat(),))
+    }
+    today = datetime.now(timezone.utc).date()
+    for day in calendar.trading_days_between(calendar.COVERAGE_START, min(today, calendar.COVERAGE_END)):
+        if day.isoformat() not in stored_dates:
+            gaps.append((day, "no bars at all"))
+
+    gaps = sorted(set(gaps), reverse=True)[:limit]
+    if not gaps:
+        return 0
+
+    print(f"[ingest] {len(gaps)} incomplete session(s) to recover from bhavcopy")
+    total = 0
+    for day, why in gaps:
+        try:
+            recovered, skipped = fill_session(conn, day, symbols, session=session, dry_run=dry_run)
+            total += recovered
+            if skipped:
+                print(f"[ingest]   {day}: {len(skipped)} symbol(s) had no ratio reference: "
+                      f"{', '.join(skipped[:5])}")
+        except NoSession:
+            print(f"[ingest]   {day}: not a session after all ({why})")
+        except Exception as exc:
+            print(f"[ingest]   {day}: could not recover ({exc}) [{why}]")
+        time.sleep(PAUSE_BETWEEN_DAYS_SECONDS)
+    return total
 
 
 # --- stage --------------------------------------------------------------------
@@ -538,6 +763,8 @@ def run(dry_run=False, symbols=None, backfill=False, **kwargs):
             else:
                 stored += store_bars(conn, rows)
                 print(f"[ingest] {len(rows)} yfinance bar(s) stored")
+
+        stored += fill_gaps(conn, symbols, session=session, dry_run=dry_run)
 
         by_source = dict(
             conn.execute("SELECT source, COUNT(*) FROM prices GROUP BY source").fetchall()

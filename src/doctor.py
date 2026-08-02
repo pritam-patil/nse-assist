@@ -169,13 +169,18 @@ def check_source_integrity():
     conn = get_connection()
     try:
         init_db(conn)
-        mixed = conn.execute(
-            "SELECT date, GROUP_CONCAT(DISTINCT source) AS sources FROM prices "
-            "GROUP BY date HAVING COUNT(DISTINCT source) > 1 ORDER BY date DESC LIMIT 5"
-        ).fetchall()
+        # Blended *basis*, not blended label. Two sources that share an adjustment
+        # basis are comparable and may sit in one date; two bases are not.
+        from src.ingest import SOURCE_BASIS
+
+        by_date = {}
+        for row in conn.execute("SELECT date, source, COUNT(*) n FROM prices GROUP BY date, source"):
+            by_date.setdefault(row["date"], set()).add(SOURCE_BASIS.get(row["source"], "unknown"))
+        mixed = sorted((d for d, bases in by_date.items() if len(bases) > 1), reverse=True)
         if mixed:
-            detail = ", ".join(f"{r['date']} ({r['sources']})" for r in mixed)
-            raise RuntimeError(f"{len(mixed)}+ date(s) blend sources: {detail}")
+            raise RuntimeError(
+                f"{len(mixed)} date(s) blend adjustment bases: {', '.join(mixed[:5])}"
+            )
 
         phantom = conn.execute(
             "SELECT COUNT(*) FROM prices WHERE volume = 0 AND open = high AND high = low AND low = close"
@@ -194,7 +199,9 @@ def check_source_integrity():
         previous = {}
         for row in rows:
             prior = previous.get(row["symbol"])
-            if prior and prior["close"] and prior["source"] != row["source"]:
+            from src.ingest import SOURCE_BASIS as _BASIS
+            if (prior and prior["close"]
+                    and _BASIS.get(prior["source"]) != _BASIS.get(row["source"])):
                 change = (row["close"] - prior["close"]) / prior["close"]
                 if abs(change) >= 0.25:
                     seam_jumps.append((row["symbol"], row["date"], change))

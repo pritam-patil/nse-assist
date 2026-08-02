@@ -60,11 +60,25 @@ TRADING_HOLIDAYS = (
 HOLIDAY_DATES = frozenset(day for day, _ in TRADING_HOLIDAYS)
 HOLIDAY_NAMES = dict(TRADING_HOLIDAYS)
 
-# Diwali Muhurat trading is a special ~1 hour evening session. NSE publishes a
-# bhavcopy for it, but it is not a normal session and its thin, unrepresentative
-# bars would distort every indicator that assumes a full day. Excluded via the
-# holiday list above (08-Nov falls on a Sunday in 2026 anyway).
+# Weekend dates NSE traded anyway. "Closed on Saturday and Sunday" is right about
+# fifty times a year and wrong the rest, and the wrongness is silent: ingest never
+# asks for the file, so the session does not fail, it simply never exists.
+#
+# Verified by probing every 2026 weekend against the archive rather than recalled —
+# 2026-02-01 is the only one so far, and NSE served 2,411 equity bars for it. The
+# equivalent 2025 session (Saturday 2025-02-01) is visible in the stored bars.
+#
+# Two kinds recur and are worth watching for:
+#   Budget day     1 February, a full session whenever it lands on a weekend
+#   Muhurat        a short ceremonial session on Diwali. 2026-11-08 is a Sunday,
+#                  so it will need adding here once NSE announces the timing.
+# A date only belongs here once the archive actually serves a bhavcopy for it.
+SPECIAL_SESSIONS = (
+    ("2026-02-01", "Union Budget session (Sunday)"),
+)
 
+SPECIAL_SESSION_DATES = frozenset(day for day, _ in SPECIAL_SESSIONS)
+SPECIAL_SESSION_NAMES = dict(SPECIAL_SESSIONS)
 
 def assert_covers(day):
     """Raise if `day` is outside the year this file describes.
@@ -87,19 +101,32 @@ def is_holiday(day):
 
 
 def is_trading_day(day):
-    """True when NSE's cash market holds a normal session on `day`."""
+    """True when NSE's cash market holds a session on `day`.
+
+    A published holiday always wins over the weekend exception: a special session
+    is announced *because* the date would otherwise be closed, so the two lists
+    never legitimately overlap and assert_consistent() rejects it if they do.
+    """
     assert_covers(day)
-    if day.weekday() >= 5:  # Saturday, Sunday
+    iso = day.isoformat()
+    if iso in HOLIDAY_DATES:
         return False
-    return day.isoformat() not in HOLIDAY_DATES
+    if iso in SPECIAL_SESSION_DATES:
+        return True
+    return day.weekday() < 5
 
 
 def describe(day):
     """Why `day` is not a session, or None when it is one."""
+    iso = day.isoformat()
+    name = HOLIDAY_NAMES.get(iso)
+    if name:
+        return f"holiday: {name}"
+    if iso in SPECIAL_SESSION_DATES:
+        return None  # a session, despite the weekend
     if day.weekday() >= 5:
         return "weekend"
-    name = HOLIDAY_NAMES.get(day.isoformat())
-    return f"holiday: {name}" if name else None
+    return None
 
 
 def trading_days_between(start, end):
@@ -126,4 +153,18 @@ def assert_consistent():
         if parsed.year != YEAR:
             raise RuntimeError(f"{day} is not in {YEAR}")
     weekday_holidays = sum(1 for d in seen if date.fromisoformat(d).weekday() < 5)
-    return f"{len(seen)} holidays in {YEAR}, {weekday_holidays} on weekdays"
+
+    # A date cannot be both closed and open. If NSE ever publishes that, the
+    # contradiction should stop a run rather than be silently resolved by ordering.
+    both = sorted(SPECIAL_SESSION_DATES & HOLIDAY_DATES)
+    if both:
+        raise RuntimeError(f"date(s) listed as both holiday and special session: {', '.join(both)}")
+    for day in SPECIAL_SESSION_DATES:
+        parsed = date.fromisoformat(day)
+        if parsed.year != YEAR:
+            raise RuntimeError(f"special session {day} is not in {YEAR}")
+        if parsed.weekday() < 5:
+            raise RuntimeError(f"special session {day} is a weekday — it needs no exception")
+
+    return (f"{len(seen)} holidays in {YEAR}, {weekday_holidays} on weekdays, "
+            f"{len(SPECIAL_SESSIONS)} weekend session(s)")
