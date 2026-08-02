@@ -108,6 +108,18 @@ CREATE TABLE IF NOT EXISTS fund_metrics (
 )
 """
 
+# Small key/value scratch space that has to outlive an ephemeral runner. Currently
+# one key: the Telegram getUpdates offset. It lives in the committed database
+# rather than a file because "which updates have already been handled" is state
+# whose loss re-processes commands, and the database is the only thing every
+# workflow already pushes back.
+_APP_STATE_SCHEMA = """
+CREATE TABLE IF NOT EXISTS app_state (
+    key TEXT PRIMARY KEY,
+    value TEXT
+)
+"""
+
 # Written by every stage start/ok/fail. Survives ephemeral CI runners because the
 # DB is committed back after each scheduled run.
 _RUNS_SCHEMA = """
@@ -131,7 +143,7 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_runs_date ON runs (date)",
 )
 
-TABLES = ("prices", "signals", "paper_trades", "fund_navs", "fund_metrics", "runs")
+TABLES = ("prices", "signals", "paper_trades", "fund_navs", "fund_metrics", "app_state", "runs")
 
 
 def get_connection(db_path=None):
@@ -162,6 +174,7 @@ def init_db(conn=None, db_path=None):
         conn.execute(_PAPER_TRADES_SCHEMA)
         conn.execute(_FUND_NAVS_SCHEMA)
         conn.execute(_FUND_METRICS_SCHEMA)
+        conn.execute(_APP_STATE_SCHEMA)
         conn.execute(_RUNS_SCHEMA)
         _ensure_column(conn, "signals", "confirming_rules", "TEXT")
         # Paper trades grew to mirror what the backtest records per trade, so the
@@ -176,6 +189,19 @@ def init_db(conn=None, db_path=None):
     finally:
         if owns_conn:
             conn.close()
+
+
+def get_state(conn, key, default=None):
+    row = conn.execute("SELECT value FROM app_state WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def set_state(conn, key, value):
+    conn.execute(
+        "INSERT INTO app_state (key, value) VALUES (?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        (key, str(value)),
+    )
 
 
 def table_counts(conn=None, db_path=None):

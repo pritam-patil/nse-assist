@@ -1,0 +1,87 @@
+name: poll
+
+# Answers /whatif commands sent to the bot. Every 30 minutes, daytime only.
+#
+# CRONS ARE UTC (see evening.yml). The window below is 08:00-22:00 IST:
+#   30 2      * * *   -> 02:30 UTC == 08:00 IST   (window opens)
+#   0,30 3-16 * * *   -> 03:00-16:30 UTC == 08:30-22:00 IST
+# 29 runs a day at roughly a billed minute each, so about 870 minutes a month on
+# top of the ~180 the scheduled reports use.
+#
+# NOTHING IS LOST OVERNIGHT. The update offset advances only once a command has
+# been answered, so a question typed at 01:00 IST is waiting in getUpdates and
+# gets answered by the 08:00 run. Telegram holds unretrieved updates for 24 hours,
+# which is the real deadline here — a poller broken for longer than a day drops
+# whatever arrived in the meantime.
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+    - cron: "0,30 3-16 * * *"
+  workflow_dispatch:
+
+# Same group as evening.yml, morning.yml and sunday.yml, for two reasons that both
+# bite. All four commit output/nse.db, and Telegram permits exactly ONE getUpdates
+# consumer per bot — a second one gets 409 Conflict, which is why this must never
+# overlap with itself either. cancel-in-progress stays false: a cancelled poll can
+# lose a command it had already replied to but not yet recorded the offset for.
+concurrency:
+  group: nse-assist-state
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      # A secret referenced but never defined arrives as an empty string rather
+      # than an error. TELEGRAM_CHAT_ID matters more here than anywhere else: it is
+      # the authorisation check, and blank would mean answering nobody rather than
+      # answering everybody — still wrong, and silent.
+      - name: Check the secrets are actually populated
+        run: |
+          missing=""
+          [ -n "$TELEGRAM_BOT_TOKEN" ] || missing="$missing TELEGRAM_BOT_TOKEN"
+          [ -n "$TELEGRAM_CHAT_ID" ] || missing="$missing TELEGRAM_CHAT_ID"
+          if [ -n "$missing" ]; then
+            echo "::error::empty secret(s):$missing — defined-but-unmapped secrets arrive blank"
+            exit 1
+          fi
+
+      - name: Answer pending commands
+        run: python main.py --stage poll
+
+      - name: Commit the offset
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git add -f output/nse.db
+          # Most runs find no commands and change nothing, so the common case is a
+          # no-op rather than 29 empty commits a day.
+          git diff --quiet --cached || git commit -m "state: $(date -u +%Y-%m-%dT%H:%MZ) poll"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Alert on failure
+        if: failure()
+        run: |
+          curl -sS --max-time 20 \
+            "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            --data-urlencode "text=nse-assist poll run FAILED.
+          ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Commands sent to the bot are not being answered. They are not lost yet —
+          Telegram holds undelivered updates for 24 hours." > /dev/null

@@ -5,8 +5,8 @@ import sys
 import traceback
 
 from src import backfill, backtest, brief, deliver, doctor, features, funds, ingest, journal
-from src import journal_report, runlog
-from src import signals, verify_data, walkforward, weekly
+from src import fund_digest, journal_report, runlog
+from src import signals, verify_data, walkforward, weekly, whatif
 from src import db
 
 STAGES = {
@@ -22,8 +22,13 @@ STAGES = {
     "journal-report": journal_report,
     "weekly": weekly,
     "funds": funds,
+    "fund-digest": fund_digest,
     "deliver": deliver,
     "brief": brief,
+    # Reads the chat rather than writing to it: drains pending /whatif commands and
+    # answers them. Deliberately outside ALL_STAGES — Telegram permits one
+    # getUpdates consumer per bot, so this must not also run inside the daily chain.
+    "poll": whatif,
     "doctor": doctor,
 }
 

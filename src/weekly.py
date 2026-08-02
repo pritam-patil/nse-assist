@@ -25,7 +25,7 @@ and showing it beside the cumulative number is what keeps it in proportion.
 
 from datetime import date, timedelta
 
-from src import backtest, deliver, risk_config, rules_config, signals
+from src import backtest, deliver, fund_digest, risk_config, rules_config, signals
 from src.db import get_connection, init_db
 from src.runlog import today
 
@@ -241,6 +241,10 @@ def build_weekly(conn, day=None):
         lines.append(f"  live expectancy {gate['expectancy']:,.0f} per trade")
     lines.append(f"  trajectory: {gate['trajectory']}")
     lines.append(f"  thresholds are {rules_config.EVALUATION_BASIS}.")
+
+    # Appended rather than sent as its own message: two Telegram messages minutes
+    # apart on a Sunday evening is how both stop being read.
+    lines.append("\n" + fund_digest.build_digest(conn))
 
     lines.append("\nDescribes past behaviour, not future returns. Paper trades. "
                  "Not investment advice.")
