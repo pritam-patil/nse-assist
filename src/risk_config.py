@@ -25,6 +25,14 @@ DAILY_PROFIT_TARGET = 5_000
 # MAX_OPEN_POSITIONS * CAPITAL_PER_TRADE regardless of how many rules fire.
 MAX_OPEN_POSITIONS = 5
 
+# Ceiling on notional deployed across every open position at once.
+#
+# MAX_OPEN_POSITIONS bounds the *count* and CAPITAL_PER_TRADE bounds each one, so
+# their product is the implied maximum — stating it separately makes it a decision
+# rather than an accident of two other numbers, and lets you hold five positions
+# while refusing to have more than this much of your capital in the market.
+MAX_TOTAL_CAPITAL = 125_000
+
 # Fraction of CAPITAL_PER_TRADE risked between entry and stop.
 #
 # Derived, not picked: MAX_DAILY_LOSS / MAX_OPEN_POSITIONS / CAPITAL_PER_TRADE
@@ -150,6 +158,7 @@ def as_dict():
     """The committed values, for the doctor stage and for stamping backtest runs."""
     return {
         "capital_per_trade": CAPITAL_PER_TRADE,
+        "max_total_capital": MAX_TOTAL_CAPITAL,
         "max_daily_loss": MAX_DAILY_LOSS,
         "daily_profit_target": DAILY_PROFIT_TARGET,
         "risk_per_trade_fraction": RISK_PER_TRADE_FRACTION,

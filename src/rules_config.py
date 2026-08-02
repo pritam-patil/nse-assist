@@ -60,6 +60,27 @@ TARGET_ATR_MULTIPLE = 2.0
 MIN_PRICE = 10.0                         # sub-10-rupee names round badly at any size
 MAX_ABS_DAILY_RETURN = 0.20              # a 20% day is news; wait for it to settle
 
+# --- rule ranking -------------------------------------------------------------
+# Net expectancy per trade, in rupees, used for two decisions: which rule executes
+# when several fire on one symbol, and which candidate is dropped first when a
+# cumulative cap binds (smallest edge goes first).
+#
+# THESE ARE PLACEHOLDERS AND ARE NOT MEASURED. Every value is 0.0, which makes the
+# ordering fall through to the documented tie-breaks rather than encode a guess.
+# Ranking rules by a number somebody invented is worse than not ranking them: it
+# looks like evidence. Burst 8 replaces these with out-of-sample results, and until
+# it does, no rule is claimed to beat another.
+RULE_EXPECTANCY = {
+    "momentum_continuation": 0.0,
+    "oversold_reversion": 0.0,
+    "volume_breakout": 0.0,
+}
+
+# Applied when expectancies tie, which is currently always. A tighter stop means
+# less risked per share for the same ATR view, so the same rupee budget buys more
+# shares and the position is denser in the setup rather than in the noise.
+DEDUPE_TIEBREAK = "tighter_stop"
+
 # --- surfacing ----------------------------------------------------------------
 # Candidates are ranked before the profit cap is applied, so the cap keeps the best
 # of them rather than whichever the scan happened to reach first. Turnover, because
@@ -94,6 +115,9 @@ def assert_consistent():
             f"reward:risk is {TARGET_ATR_MULTIPLE / STOP_ATR_MULTIPLE:.2f} — a target "
             f"nearer than the stop needs a win rate above 50% just to break even"
         )
+    missing = set(RULE_EXPECTANCY) ^ {"momentum_continuation", "oversold_reversion", "volume_breakout"}
+    if missing:
+        raise RuntimeError(f"RULE_EXPECTANCY does not cover exactly the rules: {sorted(missing)}")
     if not 0 < REVERSION_MAX_RSI < 50:
         raise RuntimeError("reversion_max_rsi outside a sane oversold band")
     return (

@@ -50,8 +50,12 @@ CREATE TABLE IF NOT EXISTS signals (
     stop REAL,
     target REAL,
     size INTEGER,
-    status TEXT DEFAULT 'new',
-    created_at TEXT
+    status TEXT DEFAULT 'proposed',
+    created_at TEXT,
+    -- Other rules that fired on the same symbol the same day. Multi-rule agreement
+    -- is a testable conviction signal, so the losers of the dedupe are recorded
+    -- rather than discarded — Burst 8 can ask whether agreement predicts anything.
+    confirming_rules TEXT
 )
 """
 
@@ -111,6 +115,17 @@ def get_connection(db_path=None):
     return conn
 
 
+def _ensure_column(conn, table, column, definition):
+    """Adds a column to an existing table if it is missing.
+
+    The database is committed and long-lived, so a schema addition has to migrate
+    what is already there rather than only shaping new files.
+    """
+    existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+    if column not in existing:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
 def init_db(conn=None, db_path=None):
     owns_conn = conn is None
     conn = conn or get_connection(db_path)
@@ -120,6 +135,7 @@ def init_db(conn=None, db_path=None):
         conn.execute(_PAPER_TRADES_SCHEMA)
         conn.execute(_FUND_NAVS_SCHEMA)
         conn.execute(_RUNS_SCHEMA)
+        _ensure_column(conn, "signals", "confirming_rules", "TEXT")
         for statement in _INDEXES:
             conn.execute(statement)
         conn.commit()

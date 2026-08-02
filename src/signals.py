@@ -228,6 +228,143 @@ def cap_by_profit_target(candidates, budget=None):
     return kept, used
 
 
+# --- portfolio assembly -------------------------------------------------------
+#
+# A separate, pure function on purpose. The live scan and Burst 7's combined
+# backtest must assemble portfolios by *identical* code — if the backtest applied
+# even slightly different caps, it would be measuring a strategy you never trade,
+# and the difference would be invisible in both outputs.
+#
+# Nothing here touches the database or the clock.
+
+
+def _edge(candidate):
+    """How much this candidate is believed to be worth, for drop ordering.
+
+    Currently zero for every rule (see rules_config.RULE_EXPECTANCY), so ordering
+    falls through to turnover. That is deliberate: inventing a ranking would look
+    like evidence.
+    """
+    return rules_config.RULE_EXPECTANCY.get(candidate["rule"], 0.0)
+
+
+def dedupe_by_symbol(candidates):
+    """One position per symbol per day, with the rest recorded as confirmation.
+
+    Several rules firing on one name is agreement, not three opportunities. Taken
+    literally it would triple single-name exposure and pay three sets of costs on
+    one view. The losers are kept as `confirming_rules` rather than dropped, because
+    whether agreement predicts anything is a question with an answer, and discarding
+    the data would make it unanswerable.
+
+    Executing rule: highest expectancy, then the tighter stop — less risked per
+    share for the same ATR view, so the position sits closer to the setup.
+    """
+    by_symbol = {}
+    for candidate in candidates:
+        by_symbol.setdefault(candidate["symbol"], []).append(candidate)
+
+    assembled = []
+    for symbol, group in by_symbol.items():
+        group.sort(key=lambda c: (-_edge(c), c["entry"] - c["stop"]))
+        winner = dict(group[0])
+        winner["confirming_rules"] = [c["rule"] for c in group[1:]]
+        assembled.append(winner)
+    return assembled
+
+
+def assemble_portfolio(candidates, budget=None):
+    """Turn ranked candidates into a portfolio that respects every cumulative cap.
+
+    Order matters and is the order the caps are stated in:
+
+      1. dedupe        one position per symbol
+      2. per-symbol    notional <= capital_per_trade
+      3. surfacing     combined target potential <= daily_profit_target
+      4. combined loss worst case <= max_daily_loss
+      5. total capital deployed notional <= max_total_capital
+
+    Steps 4 and 5 drop the smallest edge first, so a binding cap costs you the
+    candidate you believe in least. Every drop is recorded with its reason: a cap
+    that silently removes candidates is indistinguishable from a rule that stopped
+    firing, and those need different responses.
+    """
+    dropped = []
+
+    def drop(candidate, reason):
+        dropped.append({**candidate, "dropped_because": reason})
+
+    kept = dedupe_by_symbol(candidates)
+    for candidate in candidates:
+        if not any(k["symbol"] == candidate["symbol"] and k["rule"] == candidate["rule"]
+                   for k in kept):
+            drop(candidate, "duplicate symbol (recorded as confirming)")
+
+    # 2. Per-symbol notional. levels() already caps size by capital_per_trade, so
+    # this is a guard against a future sizing change rather than a live trim — and
+    # it is cheap enough to keep as an invariant rather than an assumption.
+    within_notional = []
+    for candidate in kept:
+        notional = candidate["entry"] * candidate["size"]
+        if notional > risk_config.CAPITAL_PER_TRADE:
+            shrunk = math.floor(risk_config.CAPITAL_PER_TRADE / candidate["entry"])
+            if shrunk < risk_config.MIN_SHARES:
+                drop(candidate, "per-symbol notional cap leaves no position")
+                continue
+            candidate = _resize(candidate, shrunk)
+        within_notional.append(candidate)
+
+    # Most liquid first: when a cap forces a choice, prefer what you can actually
+    # fill near the quoted price.
+    within_notional.sort(key=lambda c: -c["turnover"])
+
+    # 3. Surfacing cap on combined upside.
+    surfaced, used = cap_by_profit_target(within_notional, budget=budget)
+    for candidate in within_notional[len(surfaced):]:
+        drop(candidate, "daily profit target reached")
+
+    # 4. Combined worst case must fit the daily loss limit. This is the cap that was
+    # missing: each position individually respects max_daily_loss by construction,
+    # but four of them together did not, so the surfaced set could lose more in a day
+    # than the limit that names the day.
+    surfaced.sort(key=lambda c: (-_edge(c), -c["turnover"]))
+    within_loss, risk_used = [], 0.0
+    for candidate in surfaced:
+        if within_loss and risk_used + candidate["risk"] > risk_config.MAX_DAILY_LOSS:
+            drop(candidate, "combined worst-case loss would exceed max_daily_loss")
+            continue
+        within_loss.append(candidate)
+        risk_used += candidate["risk"]
+
+    # 5. Total deployed notional.
+    final, deployed = [], 0.0
+    for candidate in within_loss:
+        notional = candidate["entry"] * candidate["size"]
+        if final and deployed + notional > risk_config.MAX_TOTAL_CAPITAL:
+            drop(candidate, "total deployed notional would exceed max_total_capital")
+            continue
+        final.append(candidate)
+        deployed += notional
+
+    final.sort(key=lambda c: -c["turnover"])
+    return {
+        "portfolio": final,
+        "dropped": dropped,
+        "target_potential": round(sum(c["target_potential"] for c in final), 2),
+        "risk": round(sum(c["risk"] for c in final), 2),
+        "deployed": round(deployed, 2),
+    }
+
+
+def _resize(candidate, size):
+    """A copy at a new share count, with the derived amounts kept consistent."""
+    resized = dict(candidate)
+    resized["size"] = size
+    resized["risk"] = round((candidate["entry"] - candidate["stop"]) * size, 2)
+    resized["target_potential"] = round((candidate["target"] - candidate["entry"]) * size, 2)
+    return resized
+
+
 # --- proposing ----------------------------------------------------------------
 
 
@@ -256,11 +393,14 @@ def propose(conn, as_of=None, symbols=None):
             })
 
     candidates.sort(key=lambda c: -c["turnover"])
-    kept, used = cap_by_profit_target(candidates)
+    assembled = assemble_portfolio(candidates)
     return {
-        "candidates": kept,
-        "dropped_by_cap": candidates[len(kept):],
-        "target_potential": used,
+        "candidates": assembled["portfolio"],
+        "dropped": assembled["dropped"],
+        "target_potential": assembled["target_potential"],
+        "risk": assembled["risk"],
+        "deployed": assembled["deployed"],
+        "fired": len(candidates),
         "excluded": excluded,
         "unsizeable": sorted(set(unsizeable)),
         "evaluated": len(frame),
@@ -294,29 +434,39 @@ def run(dry_run=False, symbols=None, as_of=None, **kwargs):
             if not dry_run:
                 conn.execute(
                     """INSERT INTO signals
-                       (date, symbol, rule, direction, entry, stop, target, size, status, created_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (date, symbol, rule, direction, entry, stop, target, size, status,
+                        created_at, confirming_rules)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (date, candidate["symbol"], candidate["rule"], candidate["direction"],
                      candidate["entry"], candidate["stop"], candidate["target"],
-                     candidate["size"], STATUS_PROPOSED, stamp),
+                     candidate["size"], STATUS_PROPOSED, stamp,
+                     ",".join(candidate.get("confirming_rules") or []) or None),
                 )
             written += 1
         if not dry_run:
             conn.commit()
 
         suffix = " (dry run, not stored)" if dry_run else ""
-        print(f"[signals] {len(result['candidates'])} candidate(s) proposed, {written} new{suffix}")
+        print(f"[signals] {result['fired']} rule firing(s) -> "
+              f"{len(result['candidates'])} position(s) after assembly, {written} new{suffix}")
         for c in result["candidates"]:
+            confirming = c.get("confirming_rules") or []
+            note = f"  +{len(confirming)} confirming ({', '.join(confirming)})" if confirming else ""
             print(f"[signals]   {c['symbol']:<12} {c['rule']:<22} entry {c['entry']:>9.2f} "
                   f"stop {c['stop']:>9.2f} target {c['target']:>9.2f} x{c['size']:<4} "
-                  f"risk {c['risk']:>7,.0f} ({c['bound_by']}-bound)")
+                  f"risk {c['risk']:>7,.0f}{note}")
 
-        print(f"[signals] target potential {result['target_potential']:,.0f} of "
-              f"{risk_config.DAILY_PROFIT_TARGET:,} daily target")
-        if result["dropped_by_cap"]:
-            names = ", ".join(f"{c['symbol']}/{c['rule']}" for c in result["dropped_by_cap"][:6])
-            print(f"[signals] {len(result['dropped_by_cap'])} candidate(s) held back by the "
-                  f"profit cap (least liquid first): {names}")
+        print(f"[signals] portfolio: risk {result['risk']:,.0f}/{risk_config.MAX_DAILY_LOSS:,} · "
+              f"upside {result['target_potential']:,.0f}/{risk_config.DAILY_PROFIT_TARGET:,} · "
+              f"deployed {result['deployed']:,.0f}/{risk_config.MAX_TOTAL_CAPITAL:,}")
+        if result["dropped"]:
+            from collections import Counter
+            reasons = Counter(d["dropped_because"] for d in result["dropped"])
+            print(f"[signals] {len(result['dropped'])} candidate(s) dropped by assembly:")
+            for reason, count in reasons.most_common():
+                names = ", ".join(f"{d['symbol']}/{d['rule']}" for d in result["dropped"]
+                                  if d["dropped_because"] == reason)[:90]
+                print(f"[signals]   {count:>2} — {reason}: {names}")
         if result["excluded"]:
             print(f"[signals] {len(result['excluded'])} symbol(s) excluded — price "
                   f"discontinuity in the indicator window:")
