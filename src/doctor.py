@@ -98,6 +98,26 @@ def check_sizing_coverage():
         conn.close()
 
 
+def check_costs():
+    """Surfaces the cost rates and sanity-checks them.
+
+    Not a network call — it guards against an edit that silently rewrites every net
+    expectancy in the backtest. A negative rate or a break-even beyond a few percent
+    is a typo, not a broker's price list.
+    """
+    from src import costs
+
+    example = costs.round_trip(1000.0, 1000.0, max(1, risk_config.CAPITAL_PER_TRADE // 1000))
+    rates = costs.as_dict()
+    if example["total"] <= 0:
+        raise RuntimeError("a round trip costs nothing — rates look unset")
+    if example["breakeven_pct"] > 0.05:
+        raise RuntimeError(
+            f"break-even is {example['breakeven_pct']:.1%} of notional — check the rates"
+        )
+    return f"rates {rates['snapshot']} · {costs.describe_example(risk_config.CAPITAL_PER_TRADE)}"
+
+
 def check_telegram():
     config.require("TELEGRAM_BOT_TOKEN")
     response = requests.get(
@@ -238,6 +258,7 @@ def run(dry_run=False, **kwargs):
         _check("database", check_db),
         _check("universe", check_universe),
         _check("risk", check_risk),
+        _check("costs", check_costs),
         _check("sizing", check_sizing_coverage),
         _check("calendar", check_calendar),
         _check("bhavcopy", check_bhavcopy),

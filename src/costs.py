@@ -82,7 +82,10 @@ def round_trip(entry_price, exit_price, size, segment=DELIVERY):
     STT and stamp duty apply to buy and sell at different rates.
     """
     if size <= 0:
-        return {"total": 0.0}
+        # Every key the populated path returns. A partial dict here would blow up
+        # any caller that formats the full shape — the same trap summarize() had.
+        return {"brokerage": 0.0, "stt": 0.0, "exchange": 0.0, "sebi": 0.0, "stamp": 0.0,
+                "gst": 0.0, "dp": 0.0, "total": 0.0, "turnover": 0.0, "breakeven_pct": 0.0}
 
     buy_turnover = entry_price * size
     sell_turnover = exit_price * size
@@ -139,8 +142,14 @@ def as_dict():
 
 
 def describe_example(notional=25_000):
-    """A worked round trip at break-even, for the doctor stage."""
-    price, size = 1000.0, int(notional // 1000)
+    """A worked round trip at a flat price, for the doctor and backtest stages.
+
+    Priced at a notional-appropriate share count rather than a fixed one, so the
+    flat DP fee lands at its real proportion — that fee is the whole reason the
+    break-even percentage moves with position size.
+    """
+    price = 1000.0
+    size = max(1, int(notional // price))
     out = round_trip(price, price, size, DELIVERY)
     return (
         f"delivery round trip on {notional:,} notional costs {out['total']:,.0f} "

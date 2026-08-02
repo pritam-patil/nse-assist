@@ -216,7 +216,7 @@ def run(dry_run=False, symbols=None, rule_names=None, directions=None, **kwargs)
         _print_survivorship_warning(conn, tested)
         print(f"[backtest] config: rules={rule_names or list(signals.ENABLED_RULES)} "
               f"directions={directions or list(signals.ENABLED_DIRECTIONS)}")
-        print(f"[backtest] costs: {costs.describe_example()}")
+        print(f"[backtest] costs: {costs.describe_example(risk_config.CAPITAL_PER_TRADE)}")
         header = (f"{'rule':<20} {'trades':>7} {'win%':>7} {'gross':>11} {'costs':>10} "
                   f"{'net':>11} {'exp':>7}")
         print(f"[backtest] {header}")
