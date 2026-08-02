@@ -34,7 +34,7 @@ can be raced, and only rows with status='open' are ever walked.
 
 from datetime import date
 
-from src import backtest, costs, risk_config
+from src import backtest, costs, ledger, risk_config
 from src.db import get_connection, init_db
 from src.runlog import today
 
@@ -234,42 +234,29 @@ def walk_open(conn, day=None, dry_run=False):
 
 
 def summary(conn):
-    row = conn.execute(
-        """SELECT COUNT(*) closed, COALESCE(SUM(pnl), 0) total,
-                  COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) wins,
-                  COALESCE(SUM(costs), 0) charges
-           FROM paper_trades WHERE status = ?""",
-        (TRADE_CLOSED,),
-    ).fetchone()
+    """Lifetime ledger totals. Keys are this module's; the arithmetic is ledger's."""
+    stats = ledger.totals(conn)
     return {
-        "closed": row["closed"],
-        "open": len(open_trades(conn)),
-        "wins": row["wins"],
-        "total_pnl": round(row["total"], 2),
-        "costs": round(row["charges"], 2),
+        "closed": stats["trades"],
+        "open": stats["open"],
+        "wins": stats["wins"],
+        "total_pnl": stats["net_pnl"],
+        "costs": stats["costs"],
     }
 
 
 def per_rule_live(conn):
-    rows = conn.execute(
-        """SELECT s.rule,
-                  COUNT(*) trades,
-                  COALESCE(SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END), 0) wins,
-                  COALESCE(SUM(t.pnl), 0) net,
-                  COALESCE(AVG(t.pnl), 0) expectancy
-           FROM paper_trades t JOIN signals s ON s.id = t.signal_id
-           WHERE t.status = ? GROUP BY s.rule ORDER BY s.rule""",
-        (TRADE_CLOSED,),
-    ).fetchall()
     return {
-        r["rule"]: {
-            "trades": r["trades"],
-            "wins": r["wins"],
-            "hit_rate": (r["wins"] / r["trades"]) if r["trades"] else None,
-            "net": round(r["net"], 2),
-            "expectancy": round(r["expectancy"], 2),
+        rule: {
+            "trades": stats["trades"],
+            "wins": stats["wins"],
+            # None rather than 0.0 for an empty group: "no trades" and "never won"
+            # are different facts and the report prints them differently.
+            "hit_rate": stats["hit_rate"] if stats["trades"] else None,
+            "net": stats["net_pnl"],
+            "expectancy": stats["expectancy"],
         }
-        for r in rows
+        for rule, stats in ledger.by_rule(conn).items()
     }
 
 

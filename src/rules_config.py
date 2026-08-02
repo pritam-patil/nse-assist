@@ -65,22 +65,24 @@ MAX_ABS_DAILY_RETURN = 0.20              # a 20% day is news; wait for it to set
 # when several fire on one symbol, and which candidate is dropped first when a
 # cumulative cap binds (smallest edge goes first).
 #
-# INTERIM — FULL-SAMPLE BURST 7 VALUES, PENDING OVERWRITE BY BURST 8.
+# OUT-OF-SAMPLE. Written by `--stage walkforward --apply`, which is the only thing
+# that should ever edit this block — hand-editing it detaches the number from the
+# run that produced it, and a number in a config file loses its provenance the
+# moment nobody remembers where it came from.
 #
-# Measured, so they beat the zeros they replace: assembly now prefers the one rule
-# that makes money, which is right regardless of how the number was obtained.
+# All three are negative, which is the finding rather than a placeholder: no rule
+# was profitable out-of-sample in a majority of windows, so all three are disabled
+# below and the system proposes nothing.
 #
-# But they are IN-SAMPLE and therefore systematically rosy. These rules were written
-# while looking at this same history, so the thresholds have already been fitted to
-# it once, informally, by the person choosing them. Full-sample expectancy measures
-# how well a rule describes the past, not how well it predicts. Burst 8's
-# out-of-sample values are the honest ones and its persist-on-every-cycle step
-# overwrites this block; the distinction is marked here rather than remembered,
-# because a number in a config file loses its provenance the moment nobody
-# remembers where it came from.
+# The earlier full-sample values were systematically rosy for the reason every
+# in-sample number is — these rules were written while looking at this same
+# history, so the thresholds had already been fitted to it once, informally, by
+# whoever chose them. Full-sample expectancy measures how well a rule describes
+# the past, not how well it predicts. oversold_reversion read +121 full-sample and
+# -670 out-of-sample, which is the whole argument in one line.
 #
-# Source: --stage backtest, per-rule isolated replay, 2023-07-13 to 2026-07-31,
-# 99 symbols, net of costs and slippage.
+# Source: --stage walkforward, 5 folds, in-sample tuning judged out-of-sample,
+# 2023-07-13 to 2026-07-31, 99 symbols, net of costs and slippage.
 RULE_EXPECTANCY_BASIS = "out-of-sample walk-forward"
 RULE_EXPECTANCY = {
     "momentum_continuation": -257.2,
@@ -112,11 +114,11 @@ RULE_ENABLED = {
 # carried before walk-forward overwrote it. Walk-forward should replace them with
 # out-of-sample rates, and until it does, a live rate matching these has matched a
 # flattered target.
-RULE_BACKTEST_HIT_RATE_BASIS = "full-sample Burst 7, interim — not yet out-of-sample"
+RULE_BACKTEST_HIT_RATE_BASIS = "out-of-sample walk-forward"
 RULE_BACKTEST_HIT_RATE = {
-    "momentum_continuation": 0.472,
-    "oversold_reversion": 0.524,
-    "volume_breakout": 0.478,
+    "momentum_continuation": 0.3212,
+    "oversold_reversion": 0.3143,
+    "volume_breakout": 0.2159,
 }
 
 # Applied when expectancies tie, which is currently always. A tighter stop means

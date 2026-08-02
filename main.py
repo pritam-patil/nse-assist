@@ -18,7 +18,8 @@ STAGES = {
     "backfill": backfill,
     "verify-data": verify_data,
     "walkforward": walkforward,
-    # Observational. Runs after signals; nothing downstream reads it.
+    # Observational, and outside ALL_STAGES on purpose — see the note there.
+    # Runs after signals in the evening workflow; nothing downstream reads it.
     "sentiment": sentiment,
     "journal": journal,
     "journal-report": journal_report,
@@ -44,7 +45,14 @@ STAGES = {
 # than a daily one. Invoke it explicitly (--stage backtest). 'doctor',
 # 'verify-data' and 'backfill' are likewise one-off tools, not pipeline steps —
 # backfill in particular re-downloads three years and would be absurd to run daily.
-ALL_STAGES = (ingest, features, signals, sentiment, journal, funds, deliver)
+# Mirrors the evening workflow's step order, and a test asserts they agree — two
+# hand-maintained lists of the same pipeline drift, and the drift is silent.
+#
+# `sentiment` is NOT here. It is observational, it costs an LLM call per candidate
+# with a rate-limit floor between them, and `--stage all` is what you reach for to
+# test locally. Same reasoning that keeps `backtest` and `doctor` out. The evening
+# workflow invokes it as its own step.
+ALL_STAGES = (ingest, funds, features, signals, journal, deliver)
 
 
 def parse_args():

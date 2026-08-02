@@ -55,6 +55,13 @@ jobs:
       # The weekly message. journal-report stays a manual stage — it prints the same
       # ledger numbers to a terminal, and sending both would be the same content
       # twice.
+      # Read-only, no network, seconds over the whole universe. Its headline
+      # finding is also gated by doctor's `discontinuity` check, but that reports
+      # only a count — this prints the gaps, bad rows and jumps themselves, which
+      # is what you need the moment the count stops being zero.
+      - name: Verify stored data
+        run: python main.py --stage verify-data
+
       - name: Weekly report
         run: python main.py --stage weekly
 

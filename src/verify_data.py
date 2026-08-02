@@ -107,6 +107,72 @@ def find_bad_ohlc(bars):
     return bad
 
 
+# Discontinuities that have already been looked at. A within-basis jump is either
+# a real price move or a defect in the provider's adjustment, and NOTHING IN THE
+# DATA DISTINGUISHES THEM — both are a large close-to-close gap with the same
+# source on either side. Only a human comparing against the exchange's record can
+# say which, so the answer is recorded here rather than re-derived every run.
+#
+# The point of the list is not the classifications. It is that a jump NOT on it is
+# new, and new is the only kind worth interrupting anyone about. `--stage doctor`
+# fails on unreviewed jumps and stays quiet about these.
+#
+# HONESTY RULE FOR THIS LIST: "reviewed" means someone checked. Where that has not
+# happened the entry says so — an unverified guess recorded as a finding is worse
+# than an open question, because it stops anyone looking again.
+#
+# (symbol, date, status, note)
+KNOWN_DISCONTINUITIES = (
+    ("TRENT", "2026-01-01", "provider defect",
+     "yfinance applied the split factor from 2026-01-01 while the corporate action "
+     "was 2026-06-04, leaving a cliff inside the adjusted series. Verified against "
+     "bhavcopy."),
+    ("VEDL", "2026-04-30", "provider defect",
+     "demerger returned with no adjustment applied at all — adjusted/raw ratio "
+     "exactly 1.0 across the drop. Arguably correct, since the value really did "
+     "leave, but it still breaks a lookback window. Verified against bhavcopy."),
+    ("ADANIENT", "2023-02-01", "unreviewed",
+     "not yet checked against bhavcopy — date coincides with a widely reported "
+     "sell-off, but that is an assumption, not a verification"),
+    ("ADANIENT", "2023-02-02", "unreviewed",
+     "not yet checked — consecutive with the 2023-02-01 entry, same caveat"),
+    ("INDUSINDBK", "2025-03-11", "unreviewed", "not yet checked against bhavcopy"),
+    ("TMPV", "2025-10-14", "unreviewed",
+     "not yet checked — TMPV was created by the Tata Motors demerger, so a "
+     "structural break is plausible here, but plausible is not verified"),
+    ("RECLTD", "2024-06-04", "unreviewed", "not yet checked against bhavcopy"),
+)
+
+KNOWN_DISCONTINUITY_KEYS = frozenset((s, d) for s, d, _, _ in KNOWN_DISCONTINUITIES)
+DISCONTINUITIES_REVIEWED_ON = "2026-08-02"
+
+
+def unreviewed_jumps(conn=None, symbols=None):
+    """Within-basis discontinuities that are not on the acknowledgement list.
+
+    Cheap enough for the doctor stage: one query, no network. Seam jumps are left
+    to check_source_integrity — a jump *across* an adjustment basis is an artefact
+    by definition and needs no human to classify it.
+    """
+    symbols = tuple(symbols or universe.UNIVERSE)
+    owns_conn = conn is None
+    conn = conn or get_connection()
+    try:
+        init_db(conn)
+        series = load(conn, symbols)
+        out = []
+        for symbol, bars in sorted(series.items()):
+            for day, change, before, after in find_jumps(bars):
+                if before != after:
+                    continue  # a seam jump; check_source_integrity owns that one
+                if (symbol, day) not in KNOWN_DISCONTINUITY_KEYS:
+                    out.append((symbol, day, change))
+        return out
+    finally:
+        if owns_conn:
+            conn.close()
+
+
 def find_jumps(bars):
     """Close-to-close moves large enough to suggest an unapplied corporate action."""
     jumps = []

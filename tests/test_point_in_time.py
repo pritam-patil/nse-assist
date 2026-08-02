@@ -24,7 +24,6 @@ showing the cache does return stale data when it is not cleared.
 """
 
 import os
-import sqlite3
 import tempfile
 import unittest
 from datetime import date, timedelta

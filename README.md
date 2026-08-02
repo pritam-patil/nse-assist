@@ -165,17 +165,27 @@ Copy `.env.example` to `.env` and fill in `TELEGRAM_BOT_TOKEN` and
 away from the real file and it is tracked. A real token reached this public repo
 that way once.
 
-### 3. Enable the secret guard
+### 3. Enable the secret guard and automatic repacking
 
 ```bash
 git config core.hooksPath .githooks
+git config gc.auto 256
 ```
 
-Refuses any commit staging a filled-in template, a file named `.env`, or anything
-shaped like a token. It reads *staged* content, not the working tree, because those
-differ the moment a file is edited after `git add`. It never prints the offending
-value — a scanner that echoes a secret to prove it found one has copied it into
-your scrollback and your CI logs.
+The hook refuses any commit staging a filled-in template, a file named `.env`, or
+anything shaped like a token. It reads *staged* content, not the working tree,
+because those differ the moment a file is edited after `git add`. It never prints
+the offending value — a scanner that echoes a secret to prove it found one has
+copied it into your scrollback and your CI logs.
+
+`gc.auto` is about the committed database, not secrets. Every commit writes a full
+compressed copy of `output/nse.db` as a loose object; only repacking collapses
+them into deltas. Measured on this repo: **21 un-repacked commits took 81 MB, and a
+plain `git gc` took the same history to 3.8 MB.** Git's default threshold is 6,700
+loose objects, which a repo adding a few large objects a day will not reach for
+years — so a long-lived working copy drifts. 256 makes repacking happen on its own.
+The remote is unaffected either way: GitHub repacks server-side, so a fresh clone
+is always small.
 
 ### 4. Choose your funds
 
@@ -363,7 +373,7 @@ body cannot be swept, diffed, or attributed after the fact.
 | `RULE_ENABLED` | all `False` | Which rules the live scan may emit. Set by `--stage walkforward --apply`. |
 | `RULE_EXPECTANCY` | OOS values | Which rule wins a dedupe, and which candidate drops first when a cap binds. |
 | `RULE_EXPECTANCY_BASIS` | `"out-of-sample walk-forward"` | Printed in reports. A number loses its provenance the moment nobody remembers where it came from. |
-| `RULE_BACKTEST_HIT_RATE` | `0.472 / 0.524 / 0.478` | The comparison target in the weekly drift column. **Still full-sample interim** — a live rate matching these has matched a flattered target. |
+| `RULE_BACKTEST_HIT_RATE` | `0.321 / 0.314 / 0.216` | The comparison target in the weekly drift column and the gate's criterion 4. Out-of-sample, written by `--stage walkforward --apply`. |
 | `DEDUPE_TIEBREAK` | `"tighter_stop"` | Applied when expectancies tie. |
 | `RANK_BY` | `"turnover"` | Ranks candidates before the profit cap, so the cap keeps the best rather than whichever the scan reached first. |
 | `HIT_RATE_DRIFT_FLAG` | `0.15` | Live-vs-backtest gap that earns a flag in the weekly. Same value as the gate's criterion 4. |
@@ -457,7 +467,7 @@ evaluation begins.
 | 1 | **Sample** — elapsed time AND closed trades, whichever comes later | ≥ 6 weeks (42 days) **and** ≥ 30 closed trades |
 | 2 | **Cumulative P&L**, after all costs and slippage | > 0 |
 | 3 | **Expectancy per trade** | > 0 |
-| 4 | **Live-vs-backtest hit-rate drift**, worst rule | < 15 percentage points |
+| 4 | **Live-vs-backtest hit-rate drift**, worst rule | < 15 percentage points, against the **out-of-sample** rates |
 | 5 | **Against the index** — paper P&L vs NIFTY over the same days | paper ≥ index (ties pass) |
 
 **All five must hold simultaneously for a PASS.** Four out of five is not a pass.
@@ -471,6 +481,26 @@ identical to a late-and-broken one.
 The overall verdict is **IN PROGRESS** until criterion 1 is met — a criterion
 failing in week three is not a verdict, because there are trades still to come.
 Once the sample is complete the window is closed and the verdict is final.
+
+### The comparison target had to be fixed before the freeze meant anything
+
+Criterion 4 compares the live hit rate against `RULE_BACKTEST_HIT_RATE`. Until
+2026-08-02 those were **full-sample** values that the config itself labelled "not
+yet out-of-sample" — so a frozen criterion was being judged against an unfrozen,
+acknowledged-optimistic target. `--stage walkforward` had been computing the
+honest rates all along and printing them without storing them.
+
+The correction was larger than expected:
+
+```
+momentum_continuation    47.2% -> 32.1%   (-15.1pp)
+oversold_reversion       52.4% -> 31.4%   (-21.0pp)
+volume_breakout          47.8% -> 21.6%   (-26.2pp)
+```
+
+Every one of those gaps is at or beyond the 15-point drift limit. A rule hitting
+its *true* out-of-sample rate would have failed criterion 4 for matching reality.
+`--stage walkforward --apply` now persists hit rates alongside expectancies.
 
 ### Why they are frozen, and how
 
@@ -877,6 +907,51 @@ python main.py --stage ingest
 python main.py --stage verify-data
 ```
 
+### `doctor: calendar FAIL — calendar EXPIRED N day(s) ago`
+
+The holiday file covers one year and `assert_covers()` raises outside it, so from
+1 January every scheduled run fails and alerts until it is replaced. Doctor and
+every scheduled message start warning 60 days out — NSE publishes the next year's
+calendar in December, so the first warning lands after publication with two months
+to act.
+
+Replace `src/holidays_2026.py` with the list from
+`https://www.nseindia.com/api/holiday-master?type=trading`, update `YEAR`, and run
+`--stage doctor`.
+
+### `doctor: discontinuity FAIL — N unreviewed discontinuity(ies)`
+
+A within-basis price cliff that is not on the acknowledgement list. **Nothing in
+the data distinguishes a real crash from a broken provider adjustment** — both are
+a large close-to-close gap with the same source on either side. Only a human
+comparing against the exchange's record can say which.
+
+```bash
+python main.py --stage verify-data
+```
+
+Then record the finding in `verify_data.KNOWN_DISCONTINUITIES` with an honest
+status. Entries default to `unreviewed` and say so in their note; an unverified
+guess recorded as a finding is worse than an open question, because it stops
+anyone looking again. Seven are listed as of 2026-08-02, **five still unverified**.
+
+`--stage verify-data` runs on the Sunday cron. Doctor gates the count; verify-data
+prints the gaps, bad rows and jumps themselves.
+
+### `doctor: snapshots FAIL`
+
+A committed constant has outlived its clock. Three describe the world at a moment
+and all drift, in decreasing order of loudness:
+
+| Constant | Fails how | Clock |
+|---|---|---|
+| `holidays_2026.py` | raises on the first date it cannot answer | 60 days' notice |
+| `universe.py` | scans last season's index, silently | next reconstitution (March / September) |
+| `costs.py` | shifts every expectancy by a percentage nobody chose | one budget cycle (365 days) |
+
+The quieter the failure, the more it needs the clock. Cost rates are the quietest:
+a stale fee schedule produces numbers that look entirely reasonable.
+
 ### A symbol 404s every morning
 
 **Suspect a corporate action before suspecting the feed.** Ticker changes and
@@ -985,8 +1060,22 @@ broken. `test_cache_cannot_mask_a_leak` proves the cache genuinely does go stale
   Re-measure with `--stage backtest` and validate with `--stage walkforward` before
   moving them.
 - **`output/nse.db` is committed**, so each scheduled run inherits history from the
-  one before. About 12 MB. SQLite does not delta-compress, so daily commits grow
-  git history meaningfully — if it gets uncomfortable, move it to a release asset.
+  one before. About 12 MB, and it grows the repository by roughly **5 MB a year** —
+  measured, not estimated. SQLite rewrites only the pages it touches, so successive
+  versions delta-compress well: 12.4 MB packs to 3.7 MB, and each daily commit adds
+  about 19 KB on top. An earlier version of this file claimed ~2 GB/year, which was
+  wrong by roughly 400× — it assumed page rewrites would defeat delta compression.
+  There is no growth problem and no reason to move the file out of git.
+
+  The cost that *is* real is local and temporary: every commit writes a full
+  compressed copy as a loose object, and only repacking collapses them. 21 commits
+  un-repacked measured 81 MB; a plain `git gc` took it to 3.8 MB. GitHub repacks
+  server-side, so the remote and any fresh clone stay small — it is a long-lived
+  working copy that drifts. See [Setup](#1-install) for the `gc.auto` setting.
+
+  One operation genuinely costs a full-size delta: `--stage backfill --force`
+  re-adjusts every symbol and rewrites most of the file. Rare and deliberate, so
+  not worth designing around, but worth knowing before you run it.
 
 ---
 

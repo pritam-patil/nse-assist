@@ -46,9 +46,9 @@ years is an anecdote.
 """
 
 import argparse
-from datetime import date, timedelta
+from datetime import date
 
-from src import backtest, features, rules_config, signals, universe
+from src import backtest, features, signals, universe
 from src.db import get_connection, init_db
 
 # scale = noise tolerance, ratio = payoff geometry. See the docstring.
@@ -387,6 +387,14 @@ def apply_verdicts(judgements):
 
     enabled = {rule: judgement["verdict"] == "SURVIVES" for rule, judgement in judgements.items()}
     expectancy = {rule: round(judgement["expectancy"], 1) for rule, judgement in judgements.items()}
+    # Out-of-sample hit rates, persisted for the same reason the expectancies are.
+    # Before this they were computed, printed once, and thrown away — leaving the
+    # weekly drift column and the frozen gate's criterion 4 comparing live results
+    # against a full-sample number the config itself calls "not yet out-of-sample".
+    # A frozen criterion judged against an unfrozen, acknowledged-optimistic target
+    # is not frozen.
+    hit_rate = {rule: round(judgement["combined"]["hit_rate"], 4)
+                for rule, judgement in judgements.items()}
 
     text = re.sub(
         r"RULE_ENABLED = \{[^}]*\}",
@@ -398,10 +406,17 @@ def apply_verdicts(judgements):
         "RULE_EXPECTANCY = {\n" + "".join(
             f'    "{r}": {v},\n' for r, v in expectancy.items()) + "}",
         text, count=1)
+    text = re.sub(
+        r"RULE_BACKTEST_HIT_RATE = \{[^}]*\}",
+        "RULE_BACKTEST_HIT_RATE = {\n" + "".join(
+            f'    "{r}": {v},\n' for r, v in hit_rate.items()) + "}",
+        text, count=1)
     text = re.sub(r'RULE_EXPECTANCY_BASIS = "[^"]*"',
                   'RULE_EXPECTANCY_BASIS = "out-of-sample walk-forward"', text, count=1)
+    text = re.sub(r'RULE_BACKTEST_HIT_RATE_BASIS = "[^"]*"',
+                  'RULE_BACKTEST_HIT_RATE_BASIS = "out-of-sample walk-forward"', text, count=1)
     path.write_text(text)
-    return enabled, expectancy
+    return enabled, expectancy, hit_rate
 
 
 def run(dry_run=False, symbols=None, apply=False, **kwargs):
@@ -413,9 +428,10 @@ def run(dry_run=False, symbols=None, apply=False, **kwargs):
         report(results, folds, judgements)
 
         if apply:
-            enabled, expectancy = apply_verdicts(judgements)
+            enabled, expectancy, hit_rate = apply_verdicts(judgements)
             print(f"[walkforward] rules_config.py updated: enabled={enabled}")
             print(f"[walkforward] RULE_EXPECTANCY={expectancy} (basis: out-of-sample)")
+            print(f"[walkforward] RULE_BACKTEST_HIT_RATE={hit_rate} (basis: out-of-sample)")
         else:
             print("[walkforward] nothing written — re-run with --apply to update "
                   "rules_config.py from these verdicts")

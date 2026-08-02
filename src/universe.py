@@ -26,6 +26,8 @@ So: when a symbol starts failing in ingest, suspect a corporate action before
 suspecting the feed, and confirm against niftyindices rather than guessing.
 """
 
+from datetime import date
+
 # NIFTY 50.
 NIFTY_50 = (
     "ADANIENT",
@@ -142,6 +144,38 @@ UNIVERSE = NIFTY_100
 
 # Yahoo's ticker for an NSE-listed equity is the NSE symbol plus this suffix.
 YAHOO_SUFFIX = ".NS"
+
+
+# When this list was last checked against niftyindices.com, and the months NSE
+# reconstitutes in. A stale universe is the quietest failure in the repo: nothing
+# errors, the scan simply looks at last season's index — missing whatever entered
+# and carrying whatever left, both invisibly.
+SNAPSHOT_DATE = date(2026, 8, 2)
+RECONSTITUTION_MONTHS = (3, 9)   # March and September, semi-annual
+
+
+def _reconstitutions_since(snapshot, today):
+    """How many reconstitution months have started since the snapshot."""
+    count = 0
+    year = snapshot.year
+    while year <= today.year:
+        for month in RECONSTITUTION_MONTHS:
+            event = date(year, month, 1)
+            if snapshot < event <= today:
+                count += 1
+        year += 1
+    return count
+
+
+def snapshot_warning(today=None):
+    """A sentence when a reconstitution has passed since the snapshot, else None."""
+    today = today or date.today()
+    missed = _reconstitutions_since(SNAPSHOT_DATE, today)
+    if not missed:
+        return None
+    return (f"universe snapshot is {SNAPSHOT_DATE} and {missed} NIFTY 100 "
+            f"reconstitution(s) have happened since — diff against "
+            f"niftyindices.com and update src/universe.py")
 
 
 def yahoo_ticker(symbol):

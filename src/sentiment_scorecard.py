@@ -30,7 +30,7 @@ comparison visible rather than requiring arithmetic.
 
 import math
 
-from src import rules_config
+from src import ledger, rules_config
 
 # Below this, r is noise wearing a decimal point.
 MIN_TRADES_FOR_CORRELATION = 20
@@ -42,22 +42,24 @@ MIN_TRADES_PER_BUCKET = 5
 def annotated_trades(conn, as_of=None):
     """Closed trades that carry a sentiment score, oldest first.
 
-    The inner join is the point: a trade with no score is not a zero, it is absent
-    from this analysis entirely. Treating unscored trades as neutral would swamp
-    the sample with trades the layer never saw.
+    Filtering to scored trades is the point: a trade with no score is not a zero,
+    it is absent from this analysis entirely. Treating unscored trades as neutral
+    would swamp the sample with trades the layer never saw.
+
+    Trades come from ledger.closed_trades so the scorecard's population is the same
+    population the gate and the weekly judge — a different definition of "closed"
+    here would make the two reports describe different ledgers.
     """
-    clause = " AND t.exit_date <= ?" if as_of else ""
-    params = [as_of] if as_of else []
-    rows = conn.execute(
-        f"""SELECT n.score, n.symbol, t.pnl, t.exit_date, s.rule
-            FROM news_sentiment n
-            JOIN signals s ON s.id = n.signal_id
-            JOIN paper_trades t ON t.signal_id = s.id
-            WHERE t.status = 'closed' AND n.score IS NOT NULL{clause}
-            ORDER BY t.exit_date""",
-        params,
-    ).fetchall()
-    return [dict(r) for r in rows]
+    scores = {
+        r["signal_id"]: r["score"]
+        for r in conn.execute(
+            "SELECT signal_id, score FROM news_sentiment WHERE score IS NOT NULL")
+    }
+    return [
+        {**trade, "score": scores[trade["signal_id"]]}
+        for trade in ledger.closed_trades(conn, until=as_of)
+        if trade["signal_id"] in scores
+    ]
 
 
 def correlation(pairs):

@@ -11,7 +11,7 @@ import time
 
 import requests
 
-from src import config, fund_watchlist, funds, health, risk_config, rules_config, signals
+from src import config, fund_watchlist, funds, health, risk_config, signals
 from src.db import get_connection, init_db
 from src.journal import open_positions, realised_pnl, summary
 from src.runlog import today

@@ -155,9 +155,19 @@ def check_telegram():
 
 
 def check_calendar():
+    """Consistency, and how long the file has left.
+
+    FAILS on expiry rather than warning: past COVERAGE_END every scheduled run is
+    already failing, so a doctor that still reports OK is the last thing left
+    saying the system is fine.
+    """
     from src import holidays_2026 as calendar
 
-    return calendar.assert_consistent()
+    detail = calendar.assert_consistent()
+    warning = calendar.expiry_warning()
+    if warning and calendar.days_until_expiry() < 0:
+        raise RuntimeError(warning)
+    return f"{detail}{f' — {warning}' if warning else ''}"
 
 
 def _last_session():
@@ -267,6 +277,82 @@ def check_source_integrity():
         return f"no blended dates, no phantom bars, no seam jumps ({share})"
     finally:
         conn.close()
+
+
+def check_discontinuities():
+    """New within-basis price cliffs — the defect class nothing else catches.
+
+    check_source_integrity() fails on jumps ACROSS an adjustment seam, which are
+    artefacts by definition. This one covers the harder case: a cliff *inside* a
+    single basis, where the provider's own adjustment is wrong. TRENT and VEDL both
+    look like this, and neither trips the seam check.
+
+    Passes on anything already on verify_data's acknowledgement list. The point is
+    not to re-litigate known ones every Sunday; it is that a new one is loud.
+    """
+    from src import verify_data
+
+    unreviewed = verify_data.unreviewed_jumps()
+    known = len(verify_data.KNOWN_DISCONTINUITIES)
+    if unreviewed:
+        detail = ", ".join(f"{s} {d} {c:+.0%}" for s, d, c in unreviewed[:4])
+        raise RuntimeError(
+            f"{len(unreviewed)} unreviewed discontinuity(ies): {detail}. "
+            f"Check against bhavcopy, then record the finding in "
+            f"verify_data.KNOWN_DISCONTINUITIES"
+        )
+    pending = sum(1 for _, _, status, _ in verify_data.KNOWN_DISCONTINUITIES
+                  if status == "unreviewed")
+    return (f"no new discontinuities; {known} known"
+            + (f", {pending} still unverified against bhavcopy" if pending else ""))
+
+
+# Roughly four times the current 12.4 MB. Not a growth budget — the file grows
+# about 5 MB a year and would take decades to reach this. It is a guard on the
+# ASSUMPTION: successive versions delta-compress well because SQLite rewrites only
+# the pages it touches, which holds while the file is mostly append-only price
+# history. Something that breaks that shape — a table storing large text per row,
+# a much wider universe, a VACUUM that reorders every page — would show up here
+# first, and the committed-database decision would deserve re-examining.
+MAX_DB_MB = 50
+
+
+def check_db_size():
+    """The size of the thing every workflow commits.
+
+    Fails loud rather than warning, because by the time this trips the repository
+    has already been carrying the growth for a while and every future clone pays
+    for it.
+    """
+    import os
+
+    path = config.DB_PATH
+    if not os.path.exists(path):
+        return "no database yet"
+    megabytes = os.path.getsize(path) / 1e6
+    if megabytes > MAX_DB_MB:
+        raise RuntimeError(
+            f"{path} is {megabytes:,.0f} MB, past the {MAX_DB_MB} MB guard — the "
+            f"assumption that daily commits stay cheap depends on this file being "
+            f"mostly append-only price history. Check what grew before raising it"
+        )
+    return f"{megabytes:,.1f} MB of {MAX_DB_MB} MB guard (~5 MB/year growth)"
+
+
+def check_snapshot_age():
+    """Committed constants that go stale silently.
+
+    A wrong holiday fails loudly. A stale universe or an out-of-date fee schedule
+    does not fail at all — the scan quietly looks at last season's index, and every
+    net expectancy shifts by a percentage nobody chose. Both need a clock.
+    """
+    from src import costs, universe
+
+    warnings = [w for w in (universe.snapshot_warning(), costs.snapshot_warning()) if w]
+    if warnings:
+        raise RuntimeError("; ".join(warnings))
+    return (f"universe {universe.SNAPSHOT_DATE}, cost rates {costs.RATES_SNAPSHOT} "
+            f"— both current")
 
 
 def check_amfi():
@@ -383,6 +469,7 @@ def run(dry_run=False, **kwargs):
     checks = [
         _check("env", check_env),
         _check("database", check_db),
+        _check("db-size", check_db_size),
         _check("universe", check_universe),
         _check("risk", check_risk),
         _check("costs", check_costs),
@@ -393,6 +480,8 @@ def run(dry_run=False, **kwargs):
         _check("bhavcopy", check_bhavcopy),
         _check("fallback", check_fallback),
         _check("integrity", check_source_integrity),
+        _check("discontinuity", check_discontinuities),
+        _check("snapshots", check_snapshot_age),
         _check("watchlist", check_watchlist),
         _check("amfi", check_amfi),
         _check("mfapi", check_mfapi),

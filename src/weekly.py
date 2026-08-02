@@ -25,7 +25,7 @@ and showing it beside the cumulative number is what keeps it in proportion.
 
 from datetime import date, timedelta
 
-from src import backtest, deliver, fund_digest, gate, health, risk_config, rules_config
+from src import backtest, deliver, fund_digest, gate, health, ledger, risk_config, rules_config
 from src import sentiment_scorecard, signals
 from src.db import get_connection, init_db
 from src.runlog import today
@@ -40,56 +40,31 @@ def week_bounds(day=None):
 
 def _rule_stats(conn, since=None):
     """Closed trades grouped by originating rule, optionally since a date."""
-    where = "t.status = 'closed'"
-    params = []
-    if since:
-        where += " AND t.exit_date > ?"
-        params.append(since)
-    rows = conn.execute(
-        f"""SELECT s.rule,
-                   COUNT(*) trades,
-                   COALESCE(SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END), 0) wins,
-                   COALESCE(SUM(t.pnl), 0) net,
-                   COALESCE(SUM(t.costs), 0) costs
-            FROM paper_trades t JOIN signals s ON s.id = t.signal_id
-            WHERE {where} GROUP BY s.rule ORDER BY s.rule""",
-        params,
-    ).fetchall()
     return {
-        r["rule"]: {
-            "trades": r["trades"], "wins": r["wins"],
-            "hit_rate": (r["wins"] / r["trades"]) if r["trades"] else None,
-            "net": round(r["net"], 2), "costs": round(r["costs"], 2),
+        rule: {
+            "trades": stats["trades"], "wins": stats["wins"],
+            "hit_rate": stats["hit_rate"] if stats["trades"] else None,
+            "net": stats["net_pnl"], "costs": stats["costs"],
         }
-        for r in rows
+        for rule, stats in ledger.by_rule(conn, since=since).items()
     }
 
 
 def cohort_stats(conn):
     """Confirmed trades versus solo ones.
 
-    A trade is "confirmed" when more than one rule fired on that symbol that day and
-    the others were recorded rather than discarded. Whether agreement predicts
-    anything is a real question with an answer in the data, and this is the only
-    place it gets asked.
+    Whether multi-rule agreement predicts anything is a real question with an
+    answer in the data, and this is the only place it gets asked. The cohort rule
+    itself lives in ledger.by_cohort so the gate and the weekly cannot disagree
+    about what "confirmed" means.
     """
-    rows = conn.execute(
-        """SELECT CASE WHEN s.confirming_rules IS NOT NULL AND s.confirming_rules != ''
-                       THEN 'confirmed' ELSE 'solo' END cohort,
-                  COUNT(*) trades,
-                  COALESCE(SUM(CASE WHEN t.pnl > 0 THEN 1 ELSE 0 END), 0) wins,
-                  COALESCE(SUM(t.pnl), 0) net,
-                  COALESCE(AVG(t.pnl), 0) expectancy
-           FROM paper_trades t JOIN signals s ON s.id = t.signal_id
-           WHERE t.status = 'closed' GROUP BY cohort"""
-    ).fetchall()
     return {
-        r["cohort"]: {
-            "trades": r["trades"], "wins": r["wins"],
-            "hit_rate": (r["wins"] / r["trades"]) if r["trades"] else None,
-            "net": round(r["net"], 2), "expectancy": round(r["expectancy"], 2),
+        cohort: {
+            "trades": stats["trades"], "wins": stats["wins"],
+            "hit_rate": stats["hit_rate"] if stats["trades"] else None,
+            "net": stats["net_pnl"], "expectancy": stats["expectancy"],
         }
-        for r in rows
+        for cohort, stats in ledger.by_cohort(conn).items()
     }
 
 
