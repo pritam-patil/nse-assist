@@ -314,6 +314,31 @@ def check_mfapi():
     return f"{code}: {len(rows):,} historical NAV(s), {rows[0][1]} to {rows[-1][1]}"
 
 
+def check_news_map():
+    """The company-name map, which fails silently when a key is wrong.
+
+    A key that is not a universe symbol is inert — the symbol falls through to the
+    generic query and nothing reports the mapping was skipped. Not a network call
+    and not a judgement about retrieval quality; just the edit that breaks quietly.
+    """
+    from src import news
+
+    return news.assert_consistent()
+
+
+def check_sentiment_llm():
+    """Reachability of whichever LLM provider is configured, if either is.
+
+    SKIPs rather than fails when no key is set: the sentiment layer is optional by
+    design, and a doctor that fails on its absence would make an optional thing
+    mandatory by the back door.
+    """
+    from src import llm
+
+    text = llm.generate("Reply with exactly one word: pong")
+    return f"{str(text).strip()[:20]} (sentiment scoring reachable)"
+
+
 def check_freshness():
     """Per-table latest date against what the calendar says to expect.
 
@@ -371,6 +396,10 @@ def run(dry_run=False, **kwargs):
         _check("watchlist", check_watchlist),
         _check("amfi", check_amfi),
         _check("mfapi", check_mfapi),
+        _check("news-map", check_news_map),
+        (_check("sentiment", check_sentiment_llm)
+         if (config.GEMINI_API_KEY or config.GROQ_API_KEY)
+         else _skip("sentiment", "no GEMINI_API_KEY or GROQ_API_KEY — layer is optional")),
         _check("telegram", check_telegram) if config.TELEGRAM_BOT_TOKEN else _skip("telegram", "no token"),
         _check("freshness", check_freshness),
     ]

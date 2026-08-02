@@ -29,7 +29,7 @@ that compounds — the gap between it and the fill is real slippage, measured in
 backtest, and it belongs in the reader's head too.
 """
 
-from src import deliver, health, risk_config, signals
+from src import deliver, health, risk_config, sentiment, signals
 from src.db import get_connection, init_db
 from src.runlog import today
 
@@ -48,7 +48,7 @@ def enabled_signals(conn, date=None):
         return date, []
 
     rows = conn.execute(
-        "SELECT symbol, rule, direction, entry, stop, target, size, status, confirming_rules "
+        "SELECT id, symbol, rule, direction, entry, stop, target, size, status, confirming_rules "
         "FROM signals WHERE date = ? ORDER BY symbol",
         (date,),
     ).fetchall()
@@ -109,6 +109,7 @@ def build_brief(conn, date=None):
     kept, dropped, risk_used = trim_to_daily_loss(candidates)
 
     lines = [f"nse-assist brief — {today()}"]
+    notes = {}
 
     # STALENESS GOES ABOVE THE SIGNALS, NOT IN THE FOOTER.
     #
@@ -141,6 +142,8 @@ def build_brief(conn, date=None):
         lines.append(f"\nNo rules fired on {signal_date}.")
     else:
         lines.append(f"\nSignals from {signal_date} ({len(kept)})")
+        # Fetched once for the whole brief rather than per candidate.
+        notes = sentiment.for_signals(conn, [c["id"] for c in kept if c.get("id")])
         for candidate in kept:
             risk = (candidate["entry"] - candidate["stop"]) * candidate["size"]
             deployed = candidate["entry"] * candidate["size"]
@@ -152,6 +155,15 @@ def build_brief(conn, date=None):
                 f"\n  {candidate['size']} shares   capital {deployed:,.0f}   at risk {risk:,.0f}"
                 + (f"\n  also flagged by: {confirming}" if confirming else "")
             )
+            # Printed under the candidate it describes, and labelled on the same
+            # line as the number. A score shown without its status reads as an
+            # input to the decision, which is exactly what it is not.
+            note = notes.get(candidate.get("id"))
+            if note and note.get("score") is not None:
+                lines.append(
+                    f"  news {note['score']:+.2f} (unvalidated — informational only)"
+                    + (f"\n    {note['rationale']}" if note.get("rationale") else "")
+                )
 
     if kept:
         deployed = sum(c["entry"] * c["size"] for c in kept)
@@ -173,6 +185,12 @@ def build_brief(conn, date=None):
     footer = health.footer(conn, include_staleness=False)
     if footer:
         lines.append(f"\n{footer}")
+
+    if any(n.get("score") is not None for n in (notes or {}).values()):
+        lines.append(
+            "\nNews scores are observational. They did not filter, size, order or "
+            "veto anything above, and no evidence yet says they should."
+        )
 
     lines.append("\nPaper trades. Not investment advice.")
     return "\n".join(lines)

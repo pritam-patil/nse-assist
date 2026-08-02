@@ -108,6 +108,36 @@ CREATE TABLE IF NOT EXISTS fund_metrics (
 )
 """
 
+# OBSERVATIONAL ONLY. Nothing reads this table to make a decision — not sizing,
+# not filtering, not ordering. It exists to accumulate the evidence that would be
+# needed to decide whether it should ever be read for a decision, and until that
+# evidence exists it is a diary.
+#
+# headlines_json stores what was actually seen at fetch time because free news
+# sources do not serve history: a query for today, run next month, returns next
+# month's index. The point-in-time record can only be built forward, which is why
+# this runs every evening rather than being backfilled when someone wants it.
+#
+# fetched_at is the fetch timestamp, not the trading date. They differ whenever a
+# run is late or replayed, and the difference is exactly what tells you whether a
+# score could have been known before the fill.
+_NEWS_SENTIMENT_SCHEMA = """
+CREATE TABLE IF NOT EXISTS news_sentiment (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id INTEGER,
+    symbol TEXT NOT NULL,
+    date TEXT NOT NULL,
+    score REAL,
+    rationale TEXT,
+    headlines_json TEXT,
+    headline_count INTEGER,
+    provider TEXT,
+    model TEXT,
+    fetched_at TEXT,
+    FOREIGN KEY (signal_id) REFERENCES signals (id)
+)
+"""
+
 # Small key/value scratch space that has to outlive an ephemeral runner. Currently
 # one key: the Telegram getUpdates offset. It lives in the committed database
 # rather than a file because "which updates have already been handled" is state
@@ -141,9 +171,14 @@ _INDEXES = (
     # second position because a Python guard was skipped or raced.
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_paper_trades_signal ON paper_trades (signal_id)",
     "CREATE INDEX IF NOT EXISTS idx_runs_date ON runs (date)",
+    # UNIQUE: one score per signal. A re-run of the evening chain must re-use the
+    # score fetched the first time rather than paying for a second LLM call and
+    # overwriting a point-in-time record with a later view of the news.
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_news_sentiment_signal ON news_sentiment (signal_id)",
 )
 
-TABLES = ("prices", "signals", "paper_trades", "fund_navs", "fund_metrics", "app_state", "runs")
+TABLES = ("prices", "signals", "paper_trades", "fund_navs", "fund_metrics",
+          "news_sentiment", "app_state", "runs")
 
 
 def get_connection(db_path=None):
@@ -174,6 +209,7 @@ def init_db(conn=None, db_path=None):
         conn.execute(_PAPER_TRADES_SCHEMA)
         conn.execute(_FUND_NAVS_SCHEMA)
         conn.execute(_FUND_METRICS_SCHEMA)
+        conn.execute(_NEWS_SENTIMENT_SCHEMA)
         conn.execute(_APP_STATE_SCHEMA)
         conn.execute(_RUNS_SCHEMA)
         _ensure_column(conn, "signals", "confirming_rules", "TEXT")

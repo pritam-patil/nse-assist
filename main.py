@@ -6,7 +6,7 @@ import traceback
 
 from src import backfill, backtest, brief, deliver, doctor, features, funds, gate, ingest, journal
 from src import fund_digest, journal_report, runlog
-from src import signals, verify_data, walkforward, weekly, whatif
+from src import sentiment, signals, verify_data, walkforward, weekly, whatif
 from src import db
 
 STAGES = {
@@ -18,6 +18,8 @@ STAGES = {
     "backfill": backfill,
     "verify-data": verify_data,
     "walkforward": walkforward,
+    # Observational. Runs after signals; nothing downstream reads it.
+    "sentiment": sentiment,
     "journal": journal,
     "journal-report": journal_report,
     "weekly": weekly,
@@ -42,7 +44,7 @@ STAGES = {
 # than a daily one. Invoke it explicitly (--stage backtest). 'doctor',
 # 'verify-data' and 'backfill' are likewise one-off tools, not pipeline steps —
 # backfill in particular re-downloads three years and would be absurd to run daily.
-ALL_STAGES = (ingest, features, signals, journal, funds, deliver)
+ALL_STAGES = (ingest, features, signals, sentiment, journal, funds, deliver)
 
 
 def parse_args():

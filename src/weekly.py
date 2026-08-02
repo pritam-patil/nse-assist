@@ -25,7 +25,8 @@ and showing it beside the cumulative number is what keeps it in proportion.
 
 from datetime import date, timedelta
 
-from src import backtest, deliver, fund_digest, gate, health, risk_config, rules_config, signals
+from src import backtest, deliver, fund_digest, gate, health, risk_config, rules_config
+from src import sentiment_scorecard, signals
 from src.db import get_connection, init_db
 from src.runlog import today
 
@@ -198,6 +199,10 @@ def build_weekly(conn, day=None):
         lines.append(f"  difference    {difference:>12,.0f}")
 
     lines.append("\n" + gate.build_gate(conn, day))
+
+    # Shadow only: nothing in this block changed a trade, which is what makes
+    # it a measurement rather than a performance report.
+    lines.append("\n" + sentiment_scorecard.build_scorecard(conn, day))
 
     # Appended rather than sent as its own message: two Telegram messages minutes
     # apart on a Sunday evening is how both stop being read.

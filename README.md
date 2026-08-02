@@ -125,6 +125,7 @@ alpha.
 | `weekly` | Sunday review, appends the fund digest | Sunday cron |
 | `fund-digest` | The parked-cash section, standalone | on request |
 | `gate` | The five frozen evaluation criteria | Sunday cron (in `weekly`) |
+| `sentiment` | Score news for assembled candidates (observational) | yes, after `signals` |
 | `poll` | Answer `/whatif` commands | 30-min cron |
 | `doctor` | 17 health checks + freshness table | weekly cron |
 | `backtest` | Replay rules over stored history (minutes) | no |
@@ -513,6 +514,104 @@ redundancy so it is known rather than accidental.
 ```bash
 python main.py --stage gate     # standalone; the Sunday weekly embeds it
 ```
+
+---
+
+## The sentiment layer (observes, does not act)
+
+An experiment running in the open. Each evening, **after portfolio assembly**, it
+fetches recent headlines for the candidates that survived, scores each on −1..+1
+with a one-line rationale via Gemini (Groq fallback), and stores the score
+alongside the headlines it actually saw.
+
+**It changes nothing.** It does not filter, size, veto, reorder, or break a tie.
+`tests/test_sentiment.py::test_no_decision_module_imports_sentiment` reads the
+source of every module that decides something — `signals`, `journal`, `backtest`,
+`walkforward`, `features`, `risk_config`, `rules_config` — and fails if any of them
+can see the sentiment layer. That is structural rather than a promise in a
+docstring: a future edit wiring sentiment into sizing fails the suite.
+
+The reason is not caution for its own sake. An unvalidated signal wired into
+execution is indistinguishable from a validated one at the moment it costs money,
+and by then the paper record is contaminated — every trade it touched is a trade of
+a *different* strategy, and the evaluation gate is measuring something that no
+longer exists.
+
+### Why the headlines are stored, not just the score
+
+Google News does not serve history. A query for today, run next month, returns next
+month's index — items expire, get reranked, and vanish. The point-in-time record
+can only be built **forward**, which is why this runs every evening rather than
+being backfilled when someone eventually wants to analyse it. `fetched_at` is the
+fetch timestamp, not the trading date; the difference is what tells you whether a
+score could have been known before the fill.
+
+### Failure is a no-op at every level
+
+No API key, RSS down, LLM refusing, malformed JSON, a score outside the range —
+each returns nothing and the run continues. **A brief without sentiment is a
+complete brief.** The evening workflow appends `|| true` on top of that. Sentiment
+is garnish until proven otherwise.
+
+### Retrieval quality is poor, and that is recorded rather than hidden
+
+Measured on 2026-08-02 against the live feeds: a query for a ticker returns mostly
+broker price-widget pages and "stocks to watch" roundups. `NOISE_PATTERNS` drops
+those, after which several large-cap names return **zero** usable headlines on an
+ordinary day. `RELIANCE` searched as a bare ticker returned coverage of *Reliance
+Infrastructure* — a different company — which is why `COMPANY_NAMES` maps the 63
+symbols whose ticker demonstrably misfires.
+
+A wrong name silently scores another company's news under your symbol, and nothing
+can catch that automatically. `assert_consistent()` catches the half of it that is
+checkable — a key that is not a universe symbol — and the doctor runs it. It found
+four bad keys on its first run.
+
+Thin retrieval is not a bug to fix before proceeding. It is a property of free
+sources, and the scorecard exists to find out whether what does arrive predicts
+anything. The honest expectation is that it does not.
+
+### The graduation gate (frozen)
+
+**Pre-committed 2026-08-02, before the first score was stored.** Both must hold
+before an acting role is even *designed*:
+
+| Criterion | Threshold |
+|---|---|
+| Annotated closed trades | ≥ 60 |
+| Outcome gap, negative-sentiment cohort vs the rest | ≥ ₹200/trade, in the direction that makes a veto useful |
+
+60 rather than the paper gate's 30 because this is a **subgroup analysis** — the
+question is about the negative tercile, roughly a third of the sample, so the
+sample has to be bigger for the subgroup to contain anything. Pinned by
+`tests/test_sentiment.py` on the same mechanism as
+[the paper-trading gate](#the-evaluation-gate-frozen).
+
+**Clearing this bar buys a design discussion, nothing more.** And if it ever
+graduates, it enters as a **veto-only filter, evaluated in its own right — never as
+a signal generator**. A layer that can only remove candidates can be measured
+against the counterfactual of not removing them. One that can propose them has
+turned the strategy into a different strategy whose backtest does not exist.
+
+### The shadow scorecard
+
+In the Sunday weekly: correlation of stored scores with closed-trade outcomes, and
+hit rate bucketed by sentiment tercile.
+
+Correlation is **withheld below 20 trades** — Pearson's r on eleven trades is a
+confident-looking number that means nothing, and a number withheld is a number
+nobody misreads. Terciles split by **rank, not fixed score cuts**: most days score
+0.0, so a fixed-cut split would put the whole sample in one bucket and report two
+empty ones as though they were measured. Unscored trades are **absent, not
+neutral** — treating them as zero would swamp the sample with trades the layer
+never saw.
+
+```bash
+python main.py --stage sentiment      # runs after signals in the evening chain
+```
+
+Both `GEMINI_API_KEY` and `GROQ_API_KEY` are optional. Blank is the default state
+and the layer no-ops.
 
 ---
 

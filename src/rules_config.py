@@ -189,6 +189,40 @@ GATE_BEAT_BENCHMARK = True
 # Kept for the older EVALUATION_BASIS references in reports.
 EVALUATION_BASIS = GATE_BASIS
 
+# --- the sentiment graduation gate: FROZEN ------------------------------------
+#
+# ══════════════════════════════════════════════════════════════════════════════
+#  PRE-COMMITTED 2026-08-02, BEFORE THE FIRST SENTIMENT SCORE WAS STORED.
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# The sentiment layer observes and does not act. These are the conditions under
+# which it would become worth DESIGNING an acting role — not the conditions for
+# giving it one. Clearing this bar buys a design discussion, nothing more.
+#
+# Both must hold:
+#   1. at least SENTIMENT_MIN_ANNOTATED_TRADES closed trades carrying a score
+#   2. a visible outcome difference between the negative-sentiment cohort and the
+#      rest — the gap has to be large enough to matter, in the direction that
+#      would make a veto useful (negative sentiment doing WORSE)
+#
+# 60 rather than the paper gate's 30 because this is a subgroup analysis: the
+# question is about the negative tercile, which is a third of the sample, so the
+# sample has to be bigger for the subgroup to contain anything.
+#
+# IF IT GRADUATES IT ENTERS AS A VETO ONLY. Never a signal generator. A layer that
+# can only remove candidates can be evaluated against the counterfactual of not
+# removing them; one that can propose them has changed the strategy into a
+# different strategy whose backtest does not exist.
+#
+# Pinned by tests/test_sentiment.py on the same principle as the paper gate.
+SENTIMENT_GATE_FROZEN_ON = "2026-08-02"
+SENTIMENT_MIN_ANNOTATED_TRADES = 60
+# Expectancy gap, in rupees per trade, between the negative cohort and the rest.
+# Stated as a magnitude the eye can check rather than a p-value: on a sample of 60
+# with this variance, a significance test is a coin flip dressed as arithmetic.
+SENTIMENT_MIN_COHORT_GAP = 200.0
+SENTIMENT_ROLE_IF_GRADUATED = "veto-only filter, evaluated in its own right"
+
 # --- surfacing ----------------------------------------------------------------
 # Candidates are ranked before the profit cap is applied, so the cap keeps the best
 # of them rather than whichever the scan happened to reach first. Turnover, because
