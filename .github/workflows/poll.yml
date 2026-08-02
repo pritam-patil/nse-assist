@@ -70,7 +70,10 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git pull --rebase origin "${GITHUB_REF_NAME}"
-          git add -f output/nse.db
+          # Tolerant of absence: a stage can fail before the database is created,
+          # and `git add` on a missing path is a hard error that would then mask
+          # the real failure with a pathspec message.
+          if [ -f output/nse.db ]; then git add -f output/nse.db; fi
           # Most runs find no commands and change nothing, so the common case is a
           # no-op rather than 29 empty commits a day.
           git diff --quiet --cached || git commit -m "state: $(date -u +%Y-%m-%dT%H:%MZ) poll"
