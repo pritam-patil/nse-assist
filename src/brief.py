@@ -29,7 +29,7 @@ that compounds — the gap between it and the fill is real slippage, measured in
 backtest, and it belongs in the reader's head too.
 """
 
-from src import deliver, risk_config, signals
+from src import deliver, health, risk_config, signals
 from src.db import get_connection, init_db
 from src.runlog import today
 
@@ -110,6 +110,23 @@ def build_brief(conn, date=None):
 
     lines = [f"nse-assist brief — {today()}"]
 
+    # STALENESS GOES ABOVE THE SIGNALS, NOT IN THE FOOTER.
+    #
+    # The brief still sends when ingest failed — a silent morning is worse, because
+    # you cannot tell it apart from a morning with nothing to report. But the whole
+    # value of sending anyway depends on the reader knowing which day these levels
+    # describe. An entry computed from Tuesday's close, read on Thursday, is a
+    # number that looks exactly as actionable as a correct one. Under the header is
+    # the only place it cannot be skimmed past.
+    stale = health.staleness_note(conn)
+    if stale:
+        lines.append(f"\nDATA IS BEHIND\n{stale}")
+        if signal_date:
+            lines.append(
+                f"The signals below were computed on {signal_date} and have not been "
+                "recomputed since. Treat the levels as history, not as this morning's."
+            )
+
     if not signals.ENABLED_RULES:
         # Distinct from "nothing fired": nothing can fire. A reader who cannot tell
         # these apart waits indefinitely for a signal that will never come.
@@ -151,6 +168,12 @@ def build_brief(conn, date=None):
             )
 
     lines.append(last_session_results(conn, today()))
+
+    # Staleness is already under the header above, where it cannot be skimmed past.
+    footer = health.footer(conn, include_staleness=False)
+    if footer:
+        lines.append(f"\n{footer}")
+
     lines.append("\nPaper trades. Not investment advice.")
     return "\n".join(lines)
 

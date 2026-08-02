@@ -25,7 +25,7 @@ and showing it beside the cumulative number is what keeps it in proportion.
 
 from datetime import date, timedelta
 
-from src import backtest, deliver, fund_digest, risk_config, rules_config, signals
+from src import backtest, deliver, fund_digest, health, risk_config, rules_config, signals
 from src.db import get_connection, init_db
 from src.runlog import today
 
@@ -245,6 +245,10 @@ def build_weekly(conn, day=None):
     # Appended rather than sent as its own message: two Telegram messages minutes
     # apart on a Sunday evening is how both stop being read.
     lines.append("\n" + fund_digest.build_digest(conn))
+
+    footer = health.footer(conn)
+    if footer:
+        lines.append(f"\n{footer}")
 
     lines.append("\nDescribes past behaviour, not future returns. Paper trades. "
                  "Not investment advice.")

@@ -147,11 +147,26 @@ def build_digest(conn, scheme_codes=None):
                 "would measure a restatement rather than a return."
             )
 
+        # A different reason for the same n/a, and the two must not be confused: a
+        # withheld figure means the scheme has the history and we decline to
+        # misread it, while a skipped one means the history was never fetched.
+        for row, _ in ordered:
+            skipped = funds.skipped_for_short_history(conn, row["scheme_code"], row)
+            if skipped:
+                lines.append(
+                    f"    {row['label']}: {len(skipped)} long-window figure(s) not "
+                    f"computed — too few NAVs stored, not a property of the scheme."
+                )
+
     if unrankable:
         lines.append(
             f"\n  Only one scheme in: {', '.join(unrankable)}. A rank of 1 of 1 "
             "describes nothing — add more to the watchlist to compare."
         )
+
+    note = funds.history_note(conn, scheme_codes)
+    if note:
+        lines.append(f"\n  {note}")
 
     weights = ", ".join(f"{name} {weight:.0%}" for name, weight in COMPOSITE_WEIGHTS.items())
     lines.append(f"\n  Composite weights: {weights}.")

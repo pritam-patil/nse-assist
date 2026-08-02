@@ -299,6 +299,61 @@ def check_watchlist():
     return fund_watchlist.assert_consistent()
 
 
+def check_mfapi():
+    """The back-history source. Its own check, because it degrades silently.
+
+    AMFI covers the daily NAV, so mfapi.in being down costs nothing today and shows
+    up weeks later as a scheme whose long-window metrics never appear. Probing it
+    here is what turns that into a fact you can see now.
+    """
+    from src import fund_watchlist
+    from src.funds import fetch_history
+
+    code = fund_watchlist.SCHEME_CODES[0] if fund_watchlist.SCHEME_CODES else "119091"
+    rows = fetch_history(code)
+    return f"{code}: {len(rows):,} historical NAV(s), {rows[0][1]} to {rows[-1][1]}"
+
+
+def check_freshness():
+    """Per-table latest date against what the calendar says to expect.
+
+    A hard failure, not a note. Every other check here answers "can this reach its
+    source"; this one answers "did the data actually arrive", and those come apart
+    exactly when it matters — a reachable endpoint and an ingest that has not run
+    for three days is the state that produces confident, stale reports.
+    """
+    from src import health
+
+    conn = get_connection()
+    try:
+        init_db(conn)
+        rows = health.freshness(conn)
+        parts = []
+        stale = []
+        for row in rows:
+            latest = row["latest"] or "never"
+            parts.append(f"{row['table']} {latest}")
+            if row["stale"]:
+                stale.append(f"{row['table']} at {latest}, expected {row['expected']}")
+        if stale:
+            raise RuntimeError("; ".join(stale))
+        return " · ".join(parts)
+    finally:
+        conn.close()
+
+
+def freshness_table():
+    """Rows for the printed freshness block. Never raises — it is a report."""
+    from src import health
+
+    conn = get_connection()
+    try:
+        init_db(conn)
+        return health.freshness(conn)
+    finally:
+        conn.close()
+
+
 def run(dry_run=False, **kwargs):
     checks = [
         _check("env", check_env),
@@ -315,13 +370,27 @@ def run(dry_run=False, **kwargs):
         _check("integrity", check_source_integrity),
         _check("watchlist", check_watchlist),
         _check("amfi", check_amfi),
+        _check("mfapi", check_mfapi),
         _check("telegram", check_telegram) if config.TELEGRAM_BOT_TOKEN else _skip("telegram", "no token"),
+        _check("freshness", check_freshness),
     ]
 
     print(f"\n{'check':<14} {'status':<6} detail")
     print("-" * 76)
     for name, status, note in checks:
         print(f"{name:<14} {status:<6} {note}")
+    print("-" * 76)
+
+    # Freshness beside the row counts, because a count on its own answers the wrong
+    # question. 100,109 price bars looks identical whether the newest is yesterday's
+    # or from three weeks ago, and only one of those is a working pipeline.
+    print(f"\n{'table':<14} {'latest':<12} {'expected':<12} {'behind':<8} detail")
+    print("-" * 76)
+    for row in freshness_table():
+        behind = "-" if row["behind"] is None else str(row["behind"])
+        mark = "  <- stale" if row["stale"] else ""
+        print(f"{row['table']:<14} {(row['latest'] or 'never'):<12} "
+              f"{(row['expected'] or '-'):<12} {behind:<8} {row['detail']}{mark}")
     print("-" * 76)
 
     counts = table_counts()

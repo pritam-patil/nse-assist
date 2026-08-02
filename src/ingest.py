@@ -280,22 +280,41 @@ def fetch_yfinance(symbols, start, end):
     import yfinance as yf
 
     tickers = {universe.yahoo_ticker(s): s for s in symbols}
-    frame = yf.download(
-        list(tickers),
-        start=start.isoformat(),
-        end=(end + timedelta(days=1)).isoformat(),
-        interval="1d",
-        # Load-bearing: the default is True, which returns split/dividend-adjusted
-        # prices. Bhavcopy carries raw traded prices, so leaving this on would put
-        # two incompatible series in the same column.
-        auto_adjust=False,
-        actions=False,
-        group_by="ticker",
-        progress=False,
-        threads=False,
-    )
+
+    # TIMEOUT IS NOT OPTIONAL HERE. yfinance defaults to none, so a Yahoo endpoint
+    # that accepts the connection and then stops talking hangs the stage forever —
+    # and on a GitHub runner "forever" means burning to the six-hour job limit while
+    # holding the shared concurrency lock, which blocks every other workflow too.
+    # A hung dependency has to look like a failed one.
+    frame = None
+    last_error = None
+    for attempt in range(MAX_RETRIES):
+        if attempt:
+            time.sleep(2**attempt)
+        try:
+            frame = yf.download(
+                list(tickers),
+                start=start.isoformat(),
+                end=(end + timedelta(days=1)).isoformat(),
+                interval="1d",
+                # Load-bearing: the default is True, which returns split/dividend-
+                # adjusted prices. Bhavcopy carries raw traded prices, so leaving
+                # this on would put two incompatible series in the same column.
+                auto_adjust=False,
+                actions=False,
+                group_by="ticker",
+                progress=False,
+                threads=False,
+                timeout=config.REQUEST_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            last_error = RuntimeError(f"yfinance download failed: {exc}")
+            continue
+        if frame is not None and not frame.empty:
+            break
+
     if frame is None or frame.empty:
-        raise RuntimeError("yfinance returned no data")
+        raise last_error or RuntimeError("yfinance returned no data")
 
     bars = {}
     for ticker, symbol in tickers.items():
