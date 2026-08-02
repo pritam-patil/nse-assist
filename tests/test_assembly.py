@@ -248,5 +248,67 @@ class AssemblyContractTestCase(unittest.TestCase):
         self.assertEqual(result["portfolio"][0]["symbol"], "HIGH")
 
 
+class ReportTestCase(unittest.TestCase):
+    """The report must distinguish 'nothing fired' from 'nothing can fire'."""
+
+    def _report(self):
+        import os
+        import tempfile
+
+        from src import deliver
+        from src.db import get_connection, init_db
+
+        handle, path = tempfile.mkstemp(suffix=".db")
+        os.close(handle)
+        conn = get_connection(path)
+        init_db(conn)
+        try:
+            return deliver.build_report(conn, "2026-08-02")
+        finally:
+            conn.close()
+            os.unlink(path)
+
+    def test_says_no_rules_enabled_when_none_are(self):
+        """A zero next to 'Signals' reads as a quiet day. It is not — nothing will
+        fire tomorrow either, and the reader cannot tell those apart from a count.
+        """
+        original = dict(rules_config.RULE_ENABLED)
+        try:
+            for rule in rules_config.RULE_ENABLED:
+                rules_config.RULE_ENABLED[rule] = False
+            import importlib
+
+            from src import signals as signals_module
+            importlib.reload(signals_module)
+            self.assertIn("NO RULES ENABLED", self._report())
+        finally:
+            rules_config.RULE_ENABLED.clear()
+            rules_config.RULE_ENABLED.update(original)
+            import importlib
+
+            from src import signals as signals_module
+            importlib.reload(signals_module)
+
+    def test_says_nothing_fired_when_rules_are_enabled(self):
+        original = dict(rules_config.RULE_ENABLED)
+        try:
+            for rule in rules_config.RULE_ENABLED:
+                rules_config.RULE_ENABLED[rule] = True
+            import importlib
+
+            from src import signals as signals_module
+            importlib.reload(signals_module)
+            report = self._report()
+            self.assertIn("no rule fired today", report)
+            self.assertNotIn("NO RULES ENABLED", report)
+        finally:
+            rules_config.RULE_ENABLED.clear()
+            rules_config.RULE_ENABLED.update(original)
+            import importlib
+
+            from src import signals as signals_module
+            importlib.reload(signals_module)
+
+
 if __name__ == "__main__":
     unittest.main()

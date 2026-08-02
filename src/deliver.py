@@ -10,7 +10,7 @@ import time
 
 import requests
 
-from src import config, fund_watchlist, funds, risk_config, runlog
+from src import config, fund_watchlist, funds, risk_config, rules_config, runlog, signals
 from src.db import get_connection, init_db
 from src.journal import open_positions, realised_pnl, summary
 from src.runlog import today
@@ -108,6 +108,18 @@ def build_report(conn, date):
                 f"\n   entry {signal['entry']:.2f} · stop {signal['stop']:.2f} · "
                 f"target {signal['target']:.2f} · {signal['size']} sh · {signal['status']}"
             )
+    elif not signals.ENABLED_RULES:
+        # An empty scan has two very different causes and the reader cannot tell
+        # them apart from a zero. "No rule fired" invites you to wait for tomorrow;
+        # "no rules enabled" means nothing will fire tomorrow either, and the system
+        # is idle by decision rather than by market conditions.
+        disabled = ", ".join(sorted(signals.RULES))
+        lines.append(
+            "<b>NO RULES ENABLED</b> — nothing will fire until one is re-enabled.\n"
+            f"All {len(signals.RULES)} were disabled by walk-forward validation: none "
+            "was profitable out-of-sample in a majority of windows.\n"
+            f"<i>{html.escape(disabled)}</i>"
+        )
     else:
         lines.append("none — no rule fired today")
 
