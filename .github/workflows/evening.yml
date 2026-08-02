@@ -34,6 +34,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    environment: prod
     # Mapped explicitly. A secret referenced but never defined arrives as an empty
     # string rather than an error, so the guard below tests for emptiness instead of
     # trusting that the mapping worked.
