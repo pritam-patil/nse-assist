@@ -315,6 +315,13 @@ def footer(conn=None, symbols=None, now=None, hours=24, include_staleness=True):
         if run_line:
             lines.append(run_line)
 
+        # The calendar's hard stop, once it is close enough to act on. Carried in
+        # every scheduled message rather than only in the weekly doctor, because
+        # doctor speaks on failure and this needs saying *before* it becomes one.
+        expiry = calendar.expiry_warning()
+        if expiry:
+            lines.append(expiry)
+
         if not stale:
             prices = price_status(conn, symbols, now)
             if prices["latest"]:

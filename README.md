@@ -363,7 +363,7 @@ body cannot be swept, diffed, or attributed after the fact.
 | `RULE_ENABLED` | all `False` | Which rules the live scan may emit. Set by `--stage walkforward --apply`. |
 | `RULE_EXPECTANCY` | OOS values | Which rule wins a dedupe, and which candidate drops first when a cap binds. |
 | `RULE_EXPECTANCY_BASIS` | `"out-of-sample walk-forward"` | Printed in reports. A number loses its provenance the moment nobody remembers where it came from. |
-| `RULE_BACKTEST_HIT_RATE` | `0.472 / 0.524 / 0.478` | The comparison target in the weekly drift column. **Still full-sample interim** — a live rate matching these has matched a flattered target. |
+| `RULE_BACKTEST_HIT_RATE` | `0.321 / 0.314 / 0.216` | The comparison target in the weekly drift column and the gate's criterion 4. Out-of-sample, written by `--stage walkforward --apply`. |
 | `DEDUPE_TIEBREAK` | `"tighter_stop"` | Applied when expectancies tie. |
 | `RANK_BY` | `"turnover"` | Ranks candidates before the profit cap, so the cap keeps the best rather than whichever the scan reached first. |
 | `HIT_RATE_DRIFT_FLAG` | `0.15` | Live-vs-backtest gap that earns a flag in the weekly. Same value as the gate's criterion 4. |
@@ -457,7 +457,7 @@ evaluation begins.
 | 1 | **Sample** — elapsed time AND closed trades, whichever comes later | ≥ 6 weeks (42 days) **and** ≥ 30 closed trades |
 | 2 | **Cumulative P&L**, after all costs and slippage | > 0 |
 | 3 | **Expectancy per trade** | > 0 |
-| 4 | **Live-vs-backtest hit-rate drift**, worst rule | < 15 percentage points |
+| 4 | **Live-vs-backtest hit-rate drift**, worst rule | < 15 percentage points, against the **out-of-sample** rates |
 | 5 | **Against the index** — paper P&L vs NIFTY over the same days | paper ≥ index (ties pass) |
 
 **All five must hold simultaneously for a PASS.** Four out of five is not a pass.
@@ -471,6 +471,26 @@ identical to a late-and-broken one.
 The overall verdict is **IN PROGRESS** until criterion 1 is met — a criterion
 failing in week three is not a verdict, because there are trades still to come.
 Once the sample is complete the window is closed and the verdict is final.
+
+### The comparison target had to be fixed before the freeze meant anything
+
+Criterion 4 compares the live hit rate against `RULE_BACKTEST_HIT_RATE`. Until
+2026-08-02 those were **full-sample** values that the config itself labelled "not
+yet out-of-sample" — so a frozen criterion was being judged against an unfrozen,
+acknowledged-optimistic target. `--stage walkforward` had been computing the
+honest rates all along and printing them without storing them.
+
+The correction was larger than expected:
+
+```
+momentum_continuation    47.2% -> 32.1%   (-15.1pp)
+oversold_reversion       52.4% -> 31.4%   (-21.0pp)
+volume_breakout          47.8% -> 21.6%   (-26.2pp)
+```
+
+Every one of those gaps is at or beyond the 15-point drift limit. A rule hitting
+its *true* out-of-sample rate would have failed criterion 4 for matching reality.
+`--stage walkforward --apply` now persists hit rates alongside expectancies.
 
 ### Why they are frozen, and how
 
@@ -876,6 +896,18 @@ only fetches forward from its watermark.
 python main.py --stage ingest
 python main.py --stage verify-data
 ```
+
+### `doctor: calendar FAIL — calendar EXPIRED N day(s) ago`
+
+The holiday file covers one year and `assert_covers()` raises outside it, so from
+1 January every scheduled run fails and alerts until it is replaced. Doctor and
+every scheduled message start warning 60 days out — NSE publishes the next year's
+calendar in December, so the first warning lands after publication with two months
+to act.
+
+Replace `src/holidays_2026.py` with the list from
+`https://www.nseindia.com/api/holiday-master?type=trading`, update `YEAR`, and run
+`--stage doctor`.
 
 ### A symbol 404s every morning
 

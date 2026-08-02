@@ -17,6 +17,11 @@ from src.db import get_connection, init_db
 HYPE = ("!", "🚀", "📈", "great", "excellent", "opportunity", "crushing",
         "beat the market", "on fire", "don't miss")
 
+# Derived, never literal. These tests assert a relationship to the drift threshold;
+# a hard-coded rate fails the day walk-forward writes a new one, for a reason that
+# has nothing to do with what the test is named after.
+BACKTEST_RATE = rules_config.RULE_BACKTEST_HIT_RATE["momentum_continuation"]
+
 
 class WeeklyTestCase(unittest.TestCase):
     def setUp(self):
@@ -57,18 +62,20 @@ class WeeklyTestCase(unittest.TestCase):
         self.assertEqual(stats["net"], 200)
 
     def test_drift_is_flagged_past_the_threshold(self):
-        """Backtest says momentum hits 47.2%. Ten losers is 0%, a 47pp gap."""
+        """Ten losers is a 0% live rate — the full backtest rate away from it."""
         for i in range(10):
             self._trade("momentum_continuation", -100, symbol=f"L{i}")
         text = weekly.build_weekly(self.conn, self.day)
-        self.assertIn("drift", text)
-        self.assertIn("-47", text)
+        self.assertIn("<- drift", text)
+        self.assertIn(f"{-BACKTEST_RATE:+.1%}", text)
 
     def test_drift_is_not_flagged_when_live_matches_backtest(self):
-        """Roughly 50% against a 47.2% expectation is a 2.8pp gap — no flag."""
-        for i in range(5):
+        """A live rate built to sit on the backtest's own rate must never flag,
+        whatever walk-forward last wrote it to be."""
+        winners = round(20 * BACKTEST_RATE)
+        for i in range(winners):
             self._trade("momentum_continuation", 200, symbol=f"W{i}")
-        for i in range(5):
+        for i in range(20 - winners):
             self._trade("momentum_continuation", -200, symbol=f"L{i}")
         line = [l for l in weekly.build_weekly(self.conn, self.day).splitlines()
                 if l.strip().startswith("momentum_continuation")][0]

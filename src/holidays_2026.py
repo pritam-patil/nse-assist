@@ -141,6 +141,41 @@ def trading_days_between(start, end):
     return days
 
 
+# How much notice you get before this file stops working. NSE publishes the next
+# year's calendar in December, so 60 days puts the first warning in early November
+# — after publication, and with two months to act.
+EXPIRY_WARNING_DAYS = 60
+
+
+def days_until_expiry(today=None):
+    """Calendar days until this file can no longer answer a question."""
+    return (COVERAGE_END - (today or date.today())).days
+
+
+def expiry_warning(today=None):
+    """A sentence when the calendar is close to running out, else None.
+
+    THIS FILE HAS A HARD STOP AND IT IS SILENT UNTIL THE DAY IT ARRIVES.
+
+    assert_covers() raises for any date outside the year — correctly, since
+    guessing "not a holiday" for next year would make every holiday look like a
+    session with a missing bhavcopy. But the consequence is that on the first
+    trading day of the following year every scheduled run fails, alerts, and keeps
+    failing until someone replaces this file. Nothing before that day says a word.
+
+    A known outage with a known date should be a countdown, not a surprise.
+    """
+    remaining = days_until_expiry(today)
+    if remaining > EXPIRY_WARNING_DAYS:
+        return None
+    if remaining < 0:
+        return (f"calendar EXPIRED {abs(remaining)} day(s) ago — every run is failing "
+                f"until src/holidays_{YEAR}.py is replaced for {YEAR + 1}")
+    return (f"calendar expires in {remaining} day(s) ({COVERAGE_END}) — replace "
+            f"src/holidays_{YEAR}.py with NSE's {YEAR + 1} calendar before then, or "
+            f"every scheduled run from {YEAR + 1}-01-01 fails")
+
+
 def assert_consistent():
     """Guards the edits that quietly break a calendar: a duplicate date, a date from
     the wrong year, or an unparseable one. Called by the doctor stage."""

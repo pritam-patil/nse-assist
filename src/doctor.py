@@ -155,9 +155,19 @@ def check_telegram():
 
 
 def check_calendar():
+    """Consistency, and how long the file has left.
+
+    FAILS on expiry rather than warning: past COVERAGE_END every scheduled run is
+    already failing, so a doctor that still reports OK is the last thing left
+    saying the system is fine.
+    """
     from src import holidays_2026 as calendar
 
-    return calendar.assert_consistent()
+    detail = calendar.assert_consistent()
+    warning = calendar.expiry_warning()
+    if warning and calendar.days_until_expiry() < 0:
+        raise RuntimeError(warning)
+    return f"{detail}{f' — {warning}' if warning else ''}"
 
 
 def _last_session():

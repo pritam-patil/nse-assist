@@ -25,6 +25,11 @@ from datetime import date, timedelta
 from src import gate, rules_config, weekly
 from src.db import get_connection, init_db
 
+# The live backtest rate for the rule the fixtures use. Derived, never literal —
+# these tests assert a RELATIONSHIP to the threshold, not a coincidence with
+# whatever number walk-forward last wrote.
+MATCHING_HIT_RATE = rules_config.RULE_BACKTEST_HIT_RATE["momentum_continuation"]
+
 
 class FrozenThresholdsTestCase(unittest.TestCase):
     """Literal values, pre-committed 2026-08-02. See the module docstring before
@@ -101,9 +106,12 @@ class GateTestCase(unittest.TestCase):
         a fine fixture for testing break-even and a useless one for testing a pass,
         so a test wanting a profitable sample must make the winners bigger.
 
-        hit_rate=None makes every trade a winner — 100% against momentum's 47.2%
-        backtest rate, a 52.8-point drift. Tests needing the drift criterion to
-        pass must set it explicitly.
+        hit_rate=None makes every trade a winner — 100% against whatever the
+        backtest rate is, which is always far outside the drift limit. Tests
+        needing the drift criterion to PASS must pass MATCHING_HIT_RATE, derived
+        from rules_config rather than hard-coded: a literal here would fail the
+        day walk-forward writes a new rate, for a reason unrelated to the test's
+        name. That has already happened once.
         """
         loss = abs(win if loss is None else loss)
         start = date.fromisoformat(first)
@@ -204,12 +212,21 @@ class GateTestCase(unittest.TestCase):
     # --- criterion 4: drift ---
 
     def test_drift_within_the_limit_passes(self):
-        """Momentum's backtest rate is 47.2%; 15 of 30 is 50%, a 2.8-point gap."""
-        self._full_sample(hit_rate=0.5)
-        self.assertEqual(self._by_key()["drift"]["status"], gate.PASS)
+        """A live rate at the backtest's own rate is zero drift, by construction."""
+        self._full_sample(hit_rate=MATCHING_HIT_RATE)
+        rows = self._by_key()
+        self.assertEqual(rows["drift"]["status"], gate.PASS)
+
+    def test_a_live_rate_matching_the_backtest_is_not_flagged_however_it_moves(self):
+        """The guard on the whole pattern: whatever walk-forward writes, matching
+        it must never read as drift."""
+        self._full_sample(hit_rate=MATCHING_HIT_RATE)
+        drift = gate.snapshot(self.conn, self.day)["drift"]
+        self.assertLess(abs(drift), rules_config.GATE_MAX_HIT_RATE_DRIFT)
 
     def test_drift_beyond_the_limit_fails(self):
-        """Every trade a winner is 100% against a 47.2% expectation."""
+        """Every trade a winner is 100%, which is outside the limit against any
+        plausible backtest rate."""
         self._full_sample(hit_rate=1.0)
         self.assertEqual(self._by_key()["drift"]["status"], gate.FAIL)
 
@@ -267,14 +284,14 @@ class GateTestCase(unittest.TestCase):
     # --- all five together ---
 
     def test_pass_requires_every_criterion(self):
-        self._full_sample(win=500, loss=100, hit_rate=0.5)
+        self._full_sample(win=500, loss=100, hit_rate=MATCHING_HIT_RATE)
         self._store_index(20000, 20100)
         rows, _, _ = gate.criteria(self.conn, self.day)
         self.assertEqual(gate.verdict(rows), gate.VERDICT_PASS)
 
     def test_one_failing_criterion_denies_the_pass(self):
         """The whole point of five criteria: four out of five is not a pass."""
-        self._full_sample(win=500, loss=100, hit_rate=0.5)
+        self._full_sample(win=500, loss=100, hit_rate=MATCHING_HIT_RATE)
         self._store_index(20000, 30000)   # index up 50%, paper cannot match it
         rows, _, _ = gate.criteria(self.conn, self.day)
         self.assertEqual(sum(1 for r in rows if r["status"] == gate.PASS), 4)
@@ -323,7 +340,7 @@ class GateTestCase(unittest.TestCase):
         self.assertIn("paper-only", text)
 
     def test_a_pass_does_not_read_as_permission_to_trade(self):
-        self._full_sample(win=500, loss=100, hit_rate=0.5)
+        self._full_sample(win=500, loss=100, hit_rate=MATCHING_HIT_RATE)
         self._store_index(20000, 20100)
         text = gate.build_gate(self.conn, self.day)
         self.assertIn("VERDICT: PASS", text)
