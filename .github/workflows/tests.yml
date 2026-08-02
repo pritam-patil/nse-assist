@@ -19,3 +19,6 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: python -m unittest discover -s tests -t . -v
+      # Belt and braces: the pre-commit hook only protects a machine that ran
+      # `git config core.hooksPath .githooks`. CI protects the repository.
+      - run: python -m src.secrets_guard --tracked

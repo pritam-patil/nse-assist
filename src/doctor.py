@@ -124,6 +124,26 @@ def check_costs():
     return f"rates {rates['snapshot']} · {costs.describe_example(risk_config.CAPITAL_PER_TRADE)}"
 
 
+def check_secrets():
+    """No credentials in tracked files.
+
+    Shares its scanner with the pre-commit hook. Two implementations would disagree
+    at the edges, and a checker you have learned to overrule is worse than none — so
+    the hook that blocks a commit and the check that audits the repo answer the same
+    question with the same code.
+    """
+    from src import secrets_guard
+
+    findings = secrets_guard.tracked_findings()
+    if findings:
+        first = findings[0]
+        raise RuntimeError(
+            f"{len(findings)} tracked file(s) carry credentials, e.g. "
+            f"{first[0]}:{first[1]} ({first[2]})"
+        )
+    return "no credentials in tracked files"
+
+
 def check_telegram():
     config.require("TELEGRAM_BOT_TOKEN")
     response = requests.get(
@@ -287,6 +307,7 @@ def run(dry_run=False, **kwargs):
         _check("risk", check_risk),
         _check("costs", check_costs),
         _check("rules", check_rules),
+        _check("secrets", check_secrets),
         _check("sizing", check_sizing_coverage),
         _check("calendar", check_calendar),
         _check("bhavcopy", check_bhavcopy),

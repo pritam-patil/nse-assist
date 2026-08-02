@@ -86,6 +86,26 @@ inherits price history, open signals and the ledger from the run before it. It i
 about 9 MB with the full universe backfilled, and grows slowly — a few hundred
 rows a day — as long as `FUND_SCHEME_CODES` stays narrow.
 
+## Secrets
+
+A real bot token once reached this public repo through `.env.example` — a template
+living one letter away from the real `.env`, filled in "just to test". Revoking the
+token closed that; the guard stops the next one.
+
+```bash
+git config core.hooksPath .githooks
+```
+
+That one command enables `.githooks/pre-commit`, which refuses any commit staging a
+filled-in template, a file named `.env`, or anything shaped like a token. It reads
+*staged* content rather than the working tree, because those differ the moment a
+file is edited after `git add`, and it is the staged version that gets committed.
+`--stage doctor` runs the same scanner over tracked files, sharing one
+implementation so the two can never disagree about what counts as a secret.
+
+Neither ever prints the offending value: a scanner that echoes a secret to prove it
+found one has copied it into your scrollback and your CI logs.
+
 ## Tests
 
 ```bash
