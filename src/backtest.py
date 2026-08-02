@@ -21,9 +21,13 @@ from src.db import get_connection, init_db
 MAX_HOLD_BARS = 20
 
 
-def simulate_symbol(bars, rule_names=None, max_hold_bars=MAX_HOLD_BARS):
-    """Trades one symbol's history. Returns a list of closed-trade dicts."""
-    rule_names = rule_names or list(signals.RULES)
+def simulate_symbol(bars, rule_names=None, max_hold_bars=MAX_HOLD_BARS, directions=None):
+    """Trades one symbol's history. Returns a list of closed-trade dicts.
+
+    Defaults to the enabled configuration in signals.py. Pass the full rule and
+    direction sets to measure what a disabled rule would have done.
+    """
+    rule_names = rule_names or list(signals.ENABLED_RULES)
     trades = []
     open_trade = None
 
@@ -80,7 +84,7 @@ def simulate_symbol(bars, rule_names=None, max_hold_bars=MAX_HOLD_BARS):
             continue
 
         ind = features.compute(bars[: index + 1])
-        for rule, direction in signals.evaluate(ind):
+        for rule, direction in signals.evaluate(ind, rules=rule_names, directions=directions):
             if rule not in rule_names:
                 continue
             sized = signals.levels(ind, direction)
@@ -104,8 +108,11 @@ def simulate_symbol(bars, rule_names=None, max_hold_bars=MAX_HOLD_BARS):
 
 def summarize(trades):
     if not trades:
+        # Every key the populated path returns. A disabled rule reports zero trades
+        # rather than crashing the summary table that still lists it.
         return {"trades": 0, "wins": 0, "win_rate": 0.0, "total_pnl": 0.0, "avg_pnl": 0.0,
-                "best": 0.0, "worst": 0.0, "expectancy": 0.0}
+                "best": 0.0, "worst": 0.0, "expectancy": 0.0, "gross_pnl": 0.0,
+                "costs": 0.0, "not_executable": 0}
 
     pnls = [t["pnl"] for t in trades]
     gross = [t.get("gross_pnl", t["pnl"]) for t in trades]
@@ -186,7 +193,7 @@ def _print_survivorship_warning(conn, tested):
     )
 
 
-def run(dry_run=False, symbols=None, **kwargs):
+def run(dry_run=False, symbols=None, rule_names=None, directions=None, **kwargs):
     """Backtests each rule separately, then the portfolio as a whole. Read-only:
     nothing is written to signals or paper_trades."""
     symbols = symbols or universe.UNIVERSE
@@ -202,11 +209,13 @@ def run(dry_run=False, symbols=None, **kwargs):
                 continue
             for bar in bars:
                 bar["symbol"] = symbol
-            all_trades.extend(simulate_symbol(bars))
+            all_trades.extend(simulate_symbol(bars, rule_names=rule_names, directions=directions))
             tested += 1
 
         print(f"[backtest] {tested} symbol(s), risk: {risk_config.as_dict()}")
         _print_survivorship_warning(conn, tested)
+        print(f"[backtest] config: rules={rule_names or list(signals.ENABLED_RULES)} "
+              f"directions={directions or list(signals.ENABLED_DIRECTIONS)}")
         print(f"[backtest] costs: {costs.describe_example()}")
         header = (f"{'rule':<20} {'trades':>7} {'win%':>7} {'gross':>11} {'costs':>10} "
                   f"{'net':>11} {'exp':>7}")
