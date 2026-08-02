@@ -98,10 +98,20 @@ def staged_findings():
     listing = _run("git", "diff", "--cached", "--name-only", "--diff-filter=ACM")
     findings = []
     for path in [p for p in listing.stdout.splitlines() if p.strip()]:
-        blob = _run("git", "show", f":{path}")
+        # Bytes, not text. `text=True` decodes as UTF-8 and *raises* on a binary
+        # blob, which took down the whole hook the first time output/nse.db was
+        # staged — a guard that crashes on a commit blocks it just as hard as one
+        # that finds something, and says nothing useful about why.
+        blob = subprocess.run(
+            ("git", "show", f":{path}"), capture_output=True, check=False
+        )
         if blob.returncode != 0:
             continue
-        findings.extend(scan_text(path, blob.stdout))
+        try:
+            content = blob.stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            continue  # binaries carry no reviewable secrets, same as tracked_findings
+        findings.extend(scan_text(path, content))
     return findings
 
 
