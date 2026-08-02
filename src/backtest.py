@@ -12,7 +12,7 @@ and the optimistic assumption is how a backtest ends up flattering a rule.
 
 from datetime import date
 
-from src import features, risk_config, signals, universe
+from src import costs, features, risk_config, signals, universe
 from src.db import get_connection, init_db
 
 # Bars a position is held before being closed at market. Without it a trade that
@@ -52,11 +52,26 @@ def simulate_symbol(bars, rule_names=None, max_hold_bars=MAX_HOLD_BARS):
 
             if exit_price is not None:
                 sign = 1 if direction == signals.LONG else -1
+                gross = (exit_price - open_trade["entry_price"]) * sign * open_trade["size"]
+                held = index - open_trade["entry_index"]
+                segment = costs.segment_for(held)
+                charges = costs.round_trip(
+                    open_trade["entry_price"], exit_price, open_trade["size"], segment
+                )["total"]
                 open_trade.update(
                     exit_date=bar["date"],
                     exit_price=exit_price,
                     exit_reason=exit_reason,
-                    pnl=round((exit_price - open_trade["entry_price"]) * sign * open_trade["size"], 2),
+                    held_bars=held,
+                    segment=segment,
+                    # Costs are charged whichever way the trade went — that is the
+                    # point of modelling them. A rule with a thin edge can be
+                    # profitable gross and lose money net.
+                    gross_pnl=round(gross, 2),
+                    costs=round(charges, 2),
+                    pnl=round(gross - charges, 2),
+                    # A cash-segment short cannot be carried overnight; see costs.py.
+                    executable=(direction == signals.LONG) or costs.short_is_executable(held),
                 )
                 trades.append(open_trade)
                 open_trade = None
@@ -93,6 +108,8 @@ def summarize(trades):
                 "best": 0.0, "worst": 0.0, "expectancy": 0.0}
 
     pnls = [t["pnl"] for t in trades]
+    gross = [t.get("gross_pnl", t["pnl"]) for t in trades]
+    charged = [t.get("costs", 0.0) for t in trades]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
     avg_win = sum(wins) / len(wins) if wins else 0.0
@@ -110,7 +127,33 @@ def summarize(trades):
         # Rupees per trade the rule is worth on average — the number that decides
         # whether it is worth running at all.
         "expectancy": round(win_rate * avg_win + (1 - win_rate) * avg_loss, 2),
+        "gross_pnl": round(sum(gross), 2),
+        "costs": round(sum(charged), 2),
+        "not_executable": sum(1 for t in trades if not t.get("executable", True)),
     }
+
+
+def _print_direction_split(trades):
+    """Longs and shorts, separately, plus how many shorts the market would refuse.
+
+    Worth its own block because the two directions are not symmetric in Indian cash
+    equity: a long can be carried, a short cannot. A blended total hides both a
+    losing side and an unexecutable one.
+    """
+    for direction in (signals.LONG, signals.SHORT):
+        subset = [t for t in trades if t["direction"] == direction]
+        if not subset:
+            continue
+        st = summarize(subset)
+        note = ""
+        if direction == signals.SHORT and st["not_executable"]:
+            note = (f"  <-- {st['not_executable']}/{st['trades']} held overnight, "
+                    f"NOT EXECUTABLE in the cash segment")
+        print(
+            f"[backtest] {direction:<20} {st['trades']:>7} {st['win_rate'] * 100:>6.1f}% "
+            f"{st['gross_pnl']:>11,.0f} {st['costs']:>10,.0f} {st['total_pnl']:>11,.0f} "
+            f"{st['expectancy']:>7,.0f}{note}"
+        )
 
 
 def _print_survivorship_warning(conn, tested):
@@ -164,15 +207,21 @@ def run(dry_run=False, symbols=None, **kwargs):
 
         print(f"[backtest] {tested} symbol(s), risk: {risk_config.as_dict()}")
         _print_survivorship_warning(conn, tested)
-        header = f"{'rule':<20} {'trades':>7} {'win%':>7} {'total':>12} {'expectancy':>12}"
+        print(f"[backtest] costs: {costs.describe_example()}")
+        header = (f"{'rule':<20} {'trades':>7} {'win%':>7} {'gross':>11} {'costs':>10} "
+                  f"{'net':>11} {'exp':>7}")
         print(f"[backtest] {header}")
         for rule in list(signals.RULES) + ["ALL"]:
             subset = all_trades if rule == "ALL" else [t for t in all_trades if t["rule"] == rule]
-            stats = summarize(subset)
+            st = summarize(subset)
             print(
-                f"[backtest] {rule:<20} {stats['trades']:>7} {stats['win_rate'] * 100:>6.1f}% "
-                f"{stats['total_pnl']:>12,.0f} {stats['expectancy']:>12,.0f}"
+                f"[backtest] {rule:<20} {st['trades']:>7} {st['win_rate'] * 100:>6.1f}% "
+                f"{st['gross_pnl']:>11,.0f} {st['costs']:>10,.0f} {st['total_pnl']:>11,.0f} "
+                f"{st['expectancy']:>7,.0f}"
             )
+
+        _print_direction_split(all_trades)
         return summarize(all_trades)
+
     finally:
         conn.close()
