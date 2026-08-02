@@ -128,12 +128,20 @@ jobs:
           git config user.email "github-actions[bot]@users.noreply.github.com"
           # Rebase first. Three workflows write this file; a rejected push here loses
           # the session rather than retrying it.
-          git pull --rebase origin "${GITHUB_REF_NAME}"
           # Tolerant of absence: a stage can fail before the database is created,
           # and `git add` on a missing path is a hard error that would then mask
           # the real failure with a pathspec message.
           if [ -f output/nse.db ]; then git add -f output/nse.db; fi
-          git diff --quiet --cached || git commit -m "state: $(date -u +%Y-%m-%d) evening"
+          # Nothing to record is the common case, and it is not a failure.
+          if git diff --quiet --cached; then
+            echo "no state change to record"
+            exit 0
+          fi
+          git commit -m "state: $(date -u +%Y-%m-%d) evening"
+          # Commit BEFORE pulling. `git pull --rebase` refuses to run against a
+          # dirty tree, and the tree is dirty by construction here — the stages
+          # above write to the database this step exists to commit.
+          git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Alert on failure

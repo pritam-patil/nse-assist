@@ -62,21 +62,48 @@ jobs:
           fi
 
       - name: Answer pending commands
-        run: python main.py --stage poll
+        run: |
+          offset() {
+            python -c "from src.db import get_connection, get_state; \
+          print(get_state(get_connection(), 'telegram_update_offset'))"
+          }
+          before=$(offset)
+          python main.py --stage poll
+          after=$(offset)
+
+          # Discard the database unless a command was actually handled.
+          #
+          # Every run writes two rows to the `runs` audit table, so the file
+          # differs even when there were no updates — and this workflow fires 29
+          # times a day against a 12 MB binary that git cannot delta-compress.
+          # Committing each of those is a third of a gigabyte of history a day to
+          # record that nothing happened. The offset is the only state here worth
+          # keeping, so it decides.
+          if [ "$before" = "$after" ]; then
+            echo "no commands handled — discarding the run-log churn"
+            git checkout -- output/nse.db
+          fi
 
       - name: Commit the offset
         if: always()
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin "${GITHUB_REF_NAME}"
           # Tolerant of absence: a stage can fail before the database is created,
           # and `git add` on a missing path is a hard error that would then mask
           # the real failure with a pathspec message.
           if [ -f output/nse.db ]; then git add -f output/nse.db; fi
-          # Most runs find no commands and change nothing, so the common case is a
-          # no-op rather than 29 empty commits a day.
-          git diff --quiet --cached || git commit -m "state: $(date -u +%Y-%m-%dT%H:%MZ) poll"
+          # Most runs find no commands, so the common case is this no-op rather
+          # than 29 commits a day. Not a failure.
+          if git diff --quiet --cached; then
+            echo "no state change to record"
+            exit 0
+          fi
+          git commit -m "state: $(date -u +%Y-%m-%dT%H:%MZ) poll"
+          # Commit BEFORE pulling. `git pull --rebase` refuses to run against a
+          # dirty tree, and the tree is dirty by construction here — the stage
+          # writes to the database this step exists to commit.
+          git pull --rebase origin "${GITHUB_REF_NAME}"
           git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Alert on failure
