@@ -46,9 +46,9 @@ years is an anecdote.
 """
 
 import argparse
-from datetime import date, timedelta
+from datetime import date
 
-from src import backtest, features, rules_config, signals, universe
+from src import backtest, features, signals, universe
 from src.db import get_connection, init_db
 
 # scale = noise tolerance, ratio = payoff geometry. See the docstring.

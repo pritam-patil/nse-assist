@@ -223,8 +223,6 @@ def compute(bars):
         return None
 
     closes = [b["close"] for b in bars if b["close"] is not None]
-    highs = [b["high"] for b in bars if b["high"] is not None]
-    lows = [b["low"] for b in bars if b["low"] is not None]
     volumes = [float(b["volume"] or 0) for b in bars]
     last, previous = bars[-1], bars[-2]
 
@@ -263,7 +261,6 @@ def compute(bars):
         "rsi_14": rsi(closes),
         "atr_14": atr(bars),
         "atr_pct": (atr(bars) / close) if (close and atr(bars)) else None,
-        "volume": last["volume"],
         "avg_volume_20": avg_volume,
         "volume_ratio_20": (last["volume"] / avg_volume) if avg_volume else None,
         "realized_vol_20": realized_vol(closes),

@@ -543,7 +543,8 @@ def fill_session(conn, day, symbols, session=None, dry_run=False):
     # Nearest stored session after `day`, for the ratio.
     row = conn.execute("SELECT MIN(date) FROM prices WHERE date > ?", (day.isoformat(),)).fetchone()
     if not row or not row[0]:
-        raise RuntimeError(f"no later session stored to measure an adjustment ratio against")
+        raise RuntimeError(
+            f"no session stored after {day} to measure an adjustment ratio against")
     reference = date.fromisoformat(row[0])
 
     reference_raw = fetch_bhavcopy(reference, session=session)

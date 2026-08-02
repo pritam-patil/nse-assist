@@ -33,8 +33,6 @@ from urllib.parse import quote_plus
 
 import requests
 
-from src import config
-
 GOOGLE_NEWS_RSS = (
     "https://news.google.com/rss/search?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
 )

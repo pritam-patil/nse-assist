@@ -13,7 +13,7 @@ import os
 import tempfile
 import unittest
 
-from src import backtest, journal, risk_config
+from src import backtest, journal
 from src.db import get_connection, init_db
 
 SYMBOL = "TESTCO"

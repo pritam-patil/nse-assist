@@ -44,7 +44,7 @@ a trend cannot drift out of sync with the number it describes.
 
 from datetime import date, timedelta
 
-from src import backtest, deliver, rules_config
+from src import backtest, deliver, ledger, rules_config
 from src.db import get_connection, init_db
 from src.runlog import today
 
@@ -62,24 +62,6 @@ TREND_DAYS = 7
 # a green tick and a red cross are four pixels apart and colour-blind readers get
 # neither.
 MARKS = {PASS: "PASS", FAIL: "FAIL", INSUFFICIENT: "  --"}
-
-
-def _closed(conn, as_of=None):
-    """Closed paper trades at or before `as_of`, oldest first."""
-    if as_of:
-        rows = conn.execute(
-            "SELECT t.pnl, t.exit_date, t.entry_date, s.rule "
-            "FROM paper_trades t JOIN signals s ON s.id = t.signal_id "
-            "WHERE t.status = 'closed' AND t.exit_date <= ? ORDER BY t.exit_date",
-            (as_of,),
-        ).fetchall()
-    else:
-        rows = conn.execute(
-            "SELECT t.pnl, t.exit_date, t.entry_date, s.rule "
-            "FROM paper_trades t JOIN signals s ON s.id = t.signal_id "
-            "WHERE t.status = 'closed' ORDER BY t.exit_date"
-        ).fetchall()
-    return [dict(r) for r in rows]
 
 
 def _first_entry(conn, as_of=None):
@@ -100,25 +82,22 @@ def snapshot(conn, as_of=None):
     between two implementations, not a change in the strategy.
     """
     as_of = as_of or today()
-    trades = _closed(conn, as_of)
+    trades = ledger.closed_trades(conn, until=as_of)
+    stats = ledger.summarize(trades)
     first = _first_entry(conn, as_of)
 
     days = (date.fromisoformat(as_of) - date.fromisoformat(first)).days if first else 0
-    net = sum(t["pnl"] or 0 for t in trades)
-    expectancy = (net / len(trades)) if trades else None
+    net = stats["net_pnl"]
+    expectancy = stats["expectancy"] if trades else None
 
     # Drift is measured per rule and the worst one binds. Averaging would let a
     # rule that fired twice and matched perfectly cancel one that is badly off.
     drifts = {}
-    by_rule = {}
-    for trade in trades:
-        by_rule.setdefault(trade["rule"], []).append(trade)
-    for rule, rows in by_rule.items():
+    for rule, rule_stats in ledger.by_rule(conn, until=as_of).items():
         expected = rules_config.RULE_BACKTEST_HIT_RATE.get(rule)
-        if expected is None or not rows:
+        if expected is None or not rule_stats["trades"]:
             continue
-        live = sum(1 for r in rows if (r["pnl"] or 0) > 0) / len(rows)
-        drifts[rule] = live - expected
+        drifts[rule] = rule_stats["hit_rate"] - expected
     worst_drift = max(drifts.values(), key=abs) if drifts else None
 
     index_return = index_pnl = None
