@@ -84,6 +84,30 @@ CREATE TABLE IF NOT EXISTS fund_navs (
 )
 """
 
+# Point-in-time fund metrics, one row per scheme per as-of date. Cached rather than
+# recomputed because a weekly digest would otherwise re-derive a year of rolling
+# windows every time it runs, and the inputs for a past date never change.
+_FUND_METRICS_SCHEMA = """
+CREATE TABLE IF NOT EXISTS fund_metrics (
+    scheme_code TEXT NOT NULL,
+    date TEXT NOT NULL,
+    return_1m REAL,
+    return_3m REAL,
+    return_6m REAL,
+    return_1y REAL,
+    return_annualized REAL,
+    vol_3m REAL,
+    vol_1y REAL,
+    max_drawdown_1y REAL,
+    worst_month_1y REAL,
+    consistency_3m REAL,
+    observations INTEGER,
+    obs_per_year INTEGER,
+    computed_at TEXT,
+    PRIMARY KEY (scheme_code, date)
+)
+"""
+
 # Written by every stage start/ok/fail. Survives ephemeral CI runners because the
 # DB is committed back after each scheduled run.
 _RUNS_SCHEMA = """
@@ -104,7 +128,7 @@ _INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_runs_date ON runs (date)",
 )
 
-TABLES = ("prices", "signals", "paper_trades", "fund_navs", "runs")
+TABLES = ("prices", "signals", "paper_trades", "fund_navs", "fund_metrics", "runs")
 
 
 def get_connection(db_path=None):
@@ -134,6 +158,7 @@ def init_db(conn=None, db_path=None):
         conn.execute(_SIGNALS_SCHEMA)
         conn.execute(_PAPER_TRADES_SCHEMA)
         conn.execute(_FUND_NAVS_SCHEMA)
+        conn.execute(_FUND_METRICS_SCHEMA)
         conn.execute(_RUNS_SCHEMA)
         _ensure_column(conn, "signals", "confirming_rules", "TEXT")
         for statement in _INDEXES:
