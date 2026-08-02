@@ -60,15 +60,42 @@ MFAPI_RETRIES = 2
 # --- AMFI daily dump ----------------------------------------------------------
 
 
+# AMFI is the one fund source with no fallback behind it — mfapi.in serves history,
+# not today's NAV. So unlike the best-effort history fetch, this one retries: a
+# transient 5xx or a dropped connection must not cost the day's observation, since
+# nothing else will supply it and the gap is permanent once the dump rolls over.
+AMFI_RETRIES = 3
+
+
 def fetch_nav_text():
-    response = requests.get(config.AMFI_NAV_URL, timeout=config.REQUEST_TIMEOUT_SECONDS)
-    if response.status_code >= 400:
-        raise RuntimeError(f"AMFI NAV dump -> HTTP {response.status_code}")
-    if len(response.text) < 10_000:
-        # A block page or a truncated CDN response — better caught here than as
-        # "0 schemes parsed" three functions later.
-        raise RuntimeError(f"AMFI dump was only {len(response.text)} chars — truncated?")
-    return response.text
+    last_error = None
+    for attempt in range(AMFI_RETRIES):
+        if attempt:
+            time.sleep(2**attempt)
+        try:
+            response = requests.get(
+                config.AMFI_NAV_URL, timeout=config.REQUEST_TIMEOUT_SECONDS
+            )
+        except requests.RequestException as exc:
+            last_error = RuntimeError(f"AMFI NAV dump network error: {exc}")
+            continue
+        # 4xx never retries: a moved URL or a blocked client does not fix itself,
+        # and hammering it three times only delays the honest failure.
+        if response.status_code >= 500:
+            last_error = RuntimeError(f"AMFI NAV dump -> HTTP {response.status_code}")
+            continue
+        if response.status_code >= 400:
+            raise RuntimeError(f"AMFI NAV dump -> HTTP {response.status_code}")
+        if len(response.text) < 10_000:
+            # A block page or a truncated CDN response — better caught here than as
+            # "0 schemes parsed" three functions later. Retried, because a truncated
+            # CDN response is exactly the kind of thing that succeeds next time.
+            last_error = RuntimeError(
+                f"AMFI dump was only {len(response.text)} chars — truncated?"
+            )
+            continue
+        return response.text
+    raise last_error or RuntimeError("AMFI NAV dump failed")
 
 
 def parse_dump(text, scheme_codes=None):
@@ -345,6 +372,22 @@ def observation_changes(navs, since=None):
     ]
 
 
+def _window_is_filled(navs, since, days):
+    """True when observations actually reach back to the start of the window.
+
+    Without this a "1-year volatility" computed from a month of NAVs is a number
+    with the wrong label on it — and unlike a missing value, a wrong label is
+    invisible. period_return() has always enforced this through its anchor
+    tolerance; the dispersion metrics did not, so a newly tracked scheme reported
+    vol_1y and max_drawdown_1y from whatever fortnight it happened to have.
+    """
+    if not navs:
+        return False
+    earliest = navs[0][0]
+    drift = (date.fromisoformat(since) - date.fromisoformat(earliest)).days
+    return drift >= -_anchor_tolerance(days)
+
+
 def volatility(navs, as_of, days, obs_per_year=None):
     """Annualised standard deviation of observation-to-observation returns."""
     end = nav_at_or_before(navs, as_of)
@@ -352,6 +395,8 @@ def volatility(navs, as_of, days, obs_per_year=None):
         return None
     since = (date.fromisoformat(end[0]) - timedelta(days=days)).isoformat()
     visible = [n for n in navs if n[0] <= end[0]]
+    if not _window_is_filled(visible, since, days):
+        return None
     if _spans_restatement(find_restatements(visible), since, end[0]):
         return None
     changes = observation_changes(visible, since=since)
@@ -371,6 +416,9 @@ def max_drawdown(navs, as_of, days=365):
     if not end:
         return None
     since = (date.fromisoformat(end[0]) - timedelta(days=days)).isoformat()
+    visible = [n for n in navs if n[0] <= end[0]]
+    if not _window_is_filled(visible, since, days):
+        return None
     if _spans_restatement(find_restatements(navs), since, end[0]):
         return None
     window = [v for d, v in navs if since <= d <= end[0] and v]
@@ -554,6 +602,110 @@ def latest_navs(conn, scheme_codes=None):
 # --- stage --------------------------------------------------------------------
 
 
+# --- degrading when mfapi.in is unavailable ------------------------------------
+#
+# mfapi.in supplies back-history and nothing else, so an outage does not break the
+# daily AMFI pull. What it does is leave a scheme with too short a series for the
+# long windows — and period_return() correctly answers None for those. That is the
+# dangerous shape: the digest prints "n/a" in four columns, which reads as "this
+# scheme has no track record" when the truth is "we could not fetch its history".
+#
+# So the outcome of the last attempt is recorded, and the reports name it.
+
+HISTORY_STATE_KEY = "mfapi_last_outcome"
+
+# Metrics that need more history than a few days of daily pulls can accumulate.
+# Listed explicitly rather than inferred from None, because a metric can also be
+# None for the honest reason that its window crosses a restatement.
+HISTORY_DEPENDENT = (
+    "return_6m", "return_1y", "return_annualized",
+    "vol_1y", "max_drawdown_1y", "worst_month_1y", "consistency_3m",
+)
+
+# Below roughly a year of observations the 1-year window cannot be computed at all.
+MIN_DAYS_FOR_LONG_WINDOWS = 365
+
+
+def record_history_outcome(conn, ok, detail=""):
+    """Remember whether the last back-history fetch worked, and when."""
+    from src.db import set_state
+
+    set_state(conn, HISTORY_STATE_KEY,
+              f"{date.today().isoformat()}|{'ok' if ok else 'fail'}|{detail[:120]}")
+    conn.commit()
+
+
+def history_outcome(conn):
+    from src.db import get_state
+
+    raw = get_state(conn, HISTORY_STATE_KEY)
+    if not raw:
+        return None
+    parts = raw.split("|", 2)
+    if len(parts) < 2:
+        return None
+    return {"date": parts[0], "ok": parts[1] == "ok",
+            "detail": parts[2] if len(parts) > 2 else ""}
+
+
+def history_span_days(conn, scheme_code):
+    """Calendar days between the first and last stored NAV, or None if there are none.
+
+    None rather than 0 for "no NAVs at all": a scheme with a single observation also
+    spans 0 days, and the two need telling apart. Returning 0 for both made
+    history_note() silent about exactly the scheme it exists to describe — one that
+    was just added and whose history could not be fetched.
+    """
+    row = conn.execute(
+        "SELECT MIN(date) lo, MAX(date) hi FROM fund_navs WHERE scheme_code = ?",
+        (str(scheme_code),),
+    ).fetchone()
+    if not row or not row["lo"]:
+        return None
+    return (date.fromisoformat(row["hi"]) - date.fromisoformat(row["lo"])).days
+
+
+def skipped_for_short_history(conn, scheme_code, metrics):
+    """Which long-window metrics are absent because the series is too short.
+
+    Distinguishes "not enough history" from "withheld across a restatement": both
+    print as n/a and they mean opposite things about the scheme.
+    """
+    span = history_span_days(conn, scheme_code)
+    if not metrics or span is None or span >= MIN_DAYS_FOR_LONG_WINDOWS:
+        return []
+    return [name for name in HISTORY_DEPENDENT if metrics.get(name) is None]
+
+
+def history_note(conn, scheme_codes=None):
+    """One sentence for a report when back-history is missing, or None.
+
+    Only speaks when it has something to explain: a scheme short on history AND a
+    recorded reason for it. Otherwise the reports stay quiet, which is what keeps
+    the line worth reading when it does appear.
+    """
+    codes = tuple(scheme_codes or fund_watchlist.SCHEME_CODES)
+    spans = {c: history_span_days(conn, c) for c in codes}
+    short = [c for c, span in spans.items()
+             if span is not None and span < MIN_DAYS_FOR_LONG_WINDOWS]
+    if not short:
+        return None
+
+    labels = ", ".join(fund_watchlist.label_for(c) for c in short)
+    outcome = history_outcome(conn)
+    reason = ""
+    if outcome and not outcome["ok"]:
+        detail = f" ({outcome['detail']})" if outcome["detail"] else ""
+        reason = (f" mfapi.in, the back-history source, last failed on "
+                  f"{outcome['date']}{detail}.")
+    return (
+        f"Long-window figures are skipped for {labels}: fewer than "
+        f"{MIN_DAYS_FOR_LONG_WINDOWS} days of NAVs are stored, so 6-month, 1-year, "
+        f"volatility, drawdown and consistency cannot be computed.{reason} "
+        "Daily AMFI pulls accumulate history forward, so these fill in over time."
+    )
+
+
 def backfill_history(conn, scheme_codes, dry_run=False):
     """Best-effort back-history from mfapi.in. Never raises.
 
@@ -583,6 +735,17 @@ def backfill_history(conn, scheme_codes, dry_run=False):
             )
         if index < len(scheme_codes) - 1:
             time.sleep(MFAPI_PAUSE_SECONDS)
+
+    # Recorded either way, and only when something was actually attempted. The
+    # reports need to distinguish "no history because the source was down" from
+    # "no history because nobody ever asked for it" — they print the same n/a.
+    if scheme_codes and not dry_run:
+        record_history_outcome(
+            conn,
+            ok=not failures,
+            detail=f"{len(failures)} of {len(scheme_codes)} scheme(s): {failures[0]}"
+            if failures else "",
+        )
 
     if failures:
         print(f"[funds] mfapi.in unavailable for {len(failures)} scheme(s): {'; '.join(failures[:3])}")

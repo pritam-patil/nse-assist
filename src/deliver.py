@@ -11,7 +11,7 @@ import time
 
 import requests
 
-from src import config, fund_watchlist, funds, risk_config, rules_config, runlog, signals
+from src import config, fund_watchlist, funds, health, risk_config, rules_config, signals
 from src.db import get_connection, init_db
 from src.journal import open_positions, realised_pnl, summary
 from src.runlog import today
@@ -206,9 +206,13 @@ def build_report(conn, date):
             label = fund_watchlist.label_for(nav["scheme_code"])
             lines.append(f"{html.escape(label)}\n   {nav['nav']:,.4f} ({nav['date']})")
 
-    health = runlog.health_line()
-    if health:
-        lines.append(f"\n<i>{html.escape(health)}</i>")
+    # Staleness first and unescaped-into-italics like the rest of the footer, but
+    # never abbreviated away: the evening report is the one that says "0 signals",
+    # and "0 signals" from a scan that ran on last week's bars reads identically to
+    # "0 signals" from a scan that ran correctly.
+    footer = health.footer(conn)
+    if footer:
+        lines.append(f"\n<i>{html.escape(footer)}</i>")
 
     # Paper only. Worth repeating in the message itself, not just the README.
     lines.append("\n<i>Paper trades. Not investment advice.</i>")

@@ -42,6 +42,10 @@ jobs:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
       FUND_SCHEME_CODES: ${{ vars.FUND_SCHEME_CODES }}
+      # Optional. Absent, the sentiment stage no-ops — it is observational and
+      # nothing downstream reads it, so a missing key must not fail the run.
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
 
     steps:
       - uses: actions/checkout@v4
@@ -110,6 +114,14 @@ jobs:
       - name: Signals
         if: steps.calendar.outputs.trading == 'true'
         run: python main.py --stage signals
+
+      # Observational only, and after assembly by design: it scores the candidates
+      # that survived, not every rule firing. `|| true` because a free RSS feed or
+      # a rate-limited LLM must never cost the evening report — the stage already
+      # swallows its own errors, and this is the belt to that pair of braces.
+      - name: Sentiment (observational, non-blocking)
+        if: steps.calendar.outputs.trading == 'true'
+        run: python main.py --stage sentiment || true
 
       - name: Journal
         if: steps.calendar.outputs.trading == 'true'

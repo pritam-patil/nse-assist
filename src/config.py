@@ -43,6 +43,15 @@ FUND_SCHEME_CODES = tuple(
 
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS") or 20)
 
+# --- sentiment layer (observational, optional) ---------------------------------
+# Both keys are OPTIONAL. Absent, the sentiment stage is a clean no-op: it prints
+# one line and returns. Nothing downstream depends on it, by design — see
+# src/sentiment.py for why that independence is load-bearing rather than lazy.
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY")
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL") or "gemini-flash-latest"
+GROQ_MODEL = os.environ.get("GROQ_MODEL") or "llama-3.3-70b-versatile"
+
 
 def require(*names):
     """Raise if any of the named config values are unset. Call explicitly, not at import."""
