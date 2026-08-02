@@ -4,7 +4,8 @@ import argparse
 import sys
 import traceback
 
-from src import backfill, backtest, deliver, doctor, features, funds, ingest, journal, runlog
+from src import backfill, backtest, brief, deliver, doctor, features, funds, ingest, journal
+from src import runlog
 from src import signals, verify_data, walkforward
 from src import db
 
@@ -20,6 +21,7 @@ STAGES = {
     "journal": journal,
     "funds": funds,
     "deliver": deliver,
+    "brief": brief,
     "doctor": doctor,
 }
 
