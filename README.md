@@ -18,7 +18,7 @@ ingest    NSE bhavcopy -> yfinance fallback         -> prices
 features  SMA / RSI / ATR / relative volume        -> (computed, never stored)
 signals   rules -> dated, sized entries            -> signals
 journal   fills, exits, daily limits               -> paper_trades
-funds     AMFI NAV dump (needs FUND_SCHEME_CODES)  -> fund_navs
+funds     AMFI daily + mfapi.in history           -> fund_navs
 deliver   the day's report                         -> Telegram
 ```
 
@@ -46,13 +46,18 @@ python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 
 Copy `.env.example` to `.env` and fill in `TELEGRAM_BOT_TOKEN` and
 `TELEGRAM_CHAT_ID`. Everything else there is an optional override, with one
-exception worth setting: `FUND_SCHEME_CODES`. The funds stage skips entirely
-while it is empty, because storing all ~14k AMFI schemes daily would add about a
-megabyte a day to a database that gets committed after every run. Find a scheme's
-code by searching the dump:
+exception. Which fund schemes to track lives in `src/fund_watchlist.py`, committed
+alongside the universe and the risk limits. It ships with four placeholder schemes;
+replace them with what you actually hold. Find codes with:
 
 ```bash
-curl -s https://www.amfiindia.com/spages/NAVAll.txt | grep -i "parag parikh flexi"
+python main.py --stage funds --search "hdfc liquid"
+```
+
+Then pull back-history once (best-effort, third-party):
+
+```bash
+python main.py --stage funds --history
 ```
 
 Then run `--stage doctor`: it checks the environment, the live price feed, the
@@ -150,6 +155,16 @@ rows a day — as long as `FUND_SCHEME_CODES` stays narrow.
   returns split- and dividend-adjusted values that silently disagree with
   bhavcopy's raw traded prices. It is explicitly set to `False`, and its float32
   widening (1307.800048828125 for a printed 1307.80) is rounded away.
+- **Fund NAVs do not share the equity calendar, or one with each other.** Liquid and
+  overnight funds price every day including weekends, because the underlying paper
+  accrues daily; arbitrage and duration funds price on business days only. On Sunday
+  2026-08-02 the liquid scheme had that day's NAV while the arbitrage one still
+  showed Friday. A missing day is therefore normal and never an error — the funds
+  stage reports what it stored and says nothing about what it did not.
+- **mfapi.in is a community service, not a dependency.** It supplies back-history
+  and nothing else. Every call is wrapped, a failure prints one line and continues,
+  and the fallback is that daily AMFI pulls accumulate history forward. Losing it
+  costs you a start date, not a stage.
 - **Corporate actions break symbols, not the feed.** Three NIFTY 100 tickers were
   already stale when this was written — Tata Motors demerged into TMPV and TMCV,
   United Spirits trades as UNITDSPR, and LTIM no longer resolves at all. When

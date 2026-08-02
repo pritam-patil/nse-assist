@@ -244,12 +244,33 @@ def check_source_integrity():
 
 
 def check_amfi():
-    from src.funds import fetch_nav_text, parse_navs
+    """The dump parses, and every watchlist code is actually in it.
 
-    rows = parse_navs(fetch_nav_text(), config.FUND_SCHEME_CODES)
-    if not rows:
+    A code that has been wound up, or mistyped, otherwise shows up as a scheme that
+    silently never updates — which looks identical to a fund that simply prices on
+    business days only.
+    """
+    from src import fund_watchlist
+    from src.funds import fetch_nav_text, parse_dump
+
+    text = fetch_nav_text()
+    everything = parse_dump(text)
+    if not everything:
         raise RuntimeError("dump parsed to zero rows")
-    return f"{len(rows)} NAV row(s) parsed"
+
+    codes = set(fund_watchlist.SCHEME_CODES)
+    present = {r["scheme_code"] for r in everything}
+    unknown = sorted(codes - present)
+    detail = f"{len(everything):,} schemes parsed, {len(codes)} watchlisted"
+    if unknown:
+        raise RuntimeError(f"{detail}; not in the dump: {', '.join(unknown)}")
+    return detail
+
+
+def check_watchlist():
+    from src import fund_watchlist
+
+    return fund_watchlist.assert_consistent()
 
 
 def run(dry_run=False, **kwargs):
@@ -264,6 +285,7 @@ def run(dry_run=False, **kwargs):
         _check("bhavcopy", check_bhavcopy),
         _check("fallback", check_fallback),
         _check("integrity", check_source_integrity),
+        _check("watchlist", check_watchlist),
         _check("amfi", check_amfi),
         _check("telegram", check_telegram) if config.TELEGRAM_BOT_TOKEN else _skip("telegram", "no token"),
     ]

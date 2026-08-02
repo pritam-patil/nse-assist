@@ -47,6 +47,17 @@ def parse_args():
         help="Run without writing to the database or sending to Telegram.",
     )
     parser.add_argument(
+        "--search",
+        metavar="TEXT",
+        help="Funds only: search AMFI's dump by scheme-name substring and print codes, "
+        "for building the watchlist in src/fund_watchlist.py.",
+    )
+    parser.add_argument(
+        "--history",
+        action="store_true",
+        help="Funds only: backfill NAV history from mfapi.in (third-party, best-effort).",
+    )
+    parser.add_argument(
         "--force",
         action="store_true",
         help="Backfill only: re-adjust every symbol regardless of what is stored. "
@@ -71,7 +82,13 @@ def main():
         name = stage.__name__.split(".")[-1]
         runlog.log(name, "start")
         try:
-            stage.run(dry_run=args.dry_run, backfill=args.backfill, force=args.force)
+            stage.run(
+                dry_run=args.dry_run,
+                backfill=args.backfill,
+                force=args.force,
+                search_term=args.search,
+                history=args.history,
+            )
             runlog.log(name, "ok")
         except Exception as exc:
             # One stage failing must not block the others: a dead price feed should
