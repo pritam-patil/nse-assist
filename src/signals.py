@@ -76,6 +76,28 @@ RULES = {
     "pullback_in_trend": rule_pullback_in_trend,
 }
 
+# What the live scan is actually allowed to emit. Both rules stay defined above so
+# a backtest can still measure them; this controls what gets traded.
+#
+# Each exclusion is structural, not a backtest-fitted choice — that distinction
+# matters, because dropping whatever lost money last year is how you overfit.
+#
+#   sma_crossover   fires ~340 times in four years for a gross expectancy of 34,
+#                   against a 71 round trip. The edge is real but smaller than the
+#                   fixed cost of taking it, so the rule nets -4,257 over the same
+#                   history it appears to make 11,797 on. Rare-and-thin loses to
+#                   friction regardless of what the gross number says.
+#
+#   short           cannot be carried overnight in the cash segment — you cannot
+#                   deliver shares you do not own — and every short this system
+#                   generated held for a median of 12 sessions. They are not
+#                   unprofitable trades, they are trades the market will not let
+#                   you place. See costs.short_is_executable().
+#
+# Re-enable by editing these, and re-measure before you do.
+ENABLED_RULES = ("pullback_in_trend",)
+ENABLED_DIRECTIONS = (LONG,)
+
 
 def levels(ind, direction):
     """Entry/stop/target/size for a firing rule, or None when it cannot be sized.
@@ -106,14 +128,44 @@ def levels(ind, direction):
     return {"entry": entry, "stop": stop, "target": target, "size": size}
 
 
-def evaluate(ind):
-    """Every rule that fires for one symbol's indicators, as (rule, direction) pairs."""
+def has_discontinuity(ind):
+    """True when the indicator window spans a price cliff.
+
+    An unadjusted split or a demerger leaves a step in the series that no average
+    survives: the 200-day mean sits between two price regimes that never coexisted,
+    the ATR reads a range no session actually traded, and the rules then fire on the
+    artefact. Verified cases at the time of writing are TRENT (yfinance applied the
+    split factor from the wrong date) and VEDL (a demerger it did not adjust at all).
+
+    Excluding the symbol is the honest response — the indicators cannot be computed
+    from this data, so there is no signal to have an opinion about. It lifts by
+    itself once the cliff ages out of the lookback window.
+    """
+    return bool(ind) and (ind.get("max_jump") or 0) >= features.DISCONTINUITY_THRESHOLD
+
+
+def evaluate(ind, rules=None, directions=None):
+    """Every enabled rule that fires, as (rule, direction) pairs.
+
+    `rules` and `directions` override the enabled sets — backtest.py passes the full
+    sets when measuring what a disabled rule would have done.
+    """
     if ind is None:
+        return []
+    # Before any rule runs: a corrupted window cannot produce a trustworthy signal.
+    if has_discontinuity(ind):
         return []
     # Conviction filter: a signal on well-below-average volume is usually drift.
     if ind["rel_volume"] is not None and ind["rel_volume"] < MIN_REL_VOLUME:
         return []
-    return [(name, direction) for name, rule in RULES.items() if (direction := rule(ind))]
+
+    allowed_rules = ENABLED_RULES if rules is None else rules
+    allowed_directions = ENABLED_DIRECTIONS if directions is None else directions
+    return [
+        (name, direction)
+        for name, rule in RULES.items()
+        if name in allowed_rules and (direction := rule(ind)) in allowed_directions
+    ]
 
 
 def _already_recorded(conn, date, symbol, rule):
@@ -131,14 +183,20 @@ def run(dry_run=False, symbols=None, **kwargs):
     try:
         init_db(conn)
         date = today()
+        print(f"[signals] enabled: {', '.join(ENABLED_RULES)} / {', '.join(ENABLED_DIRECTIONS)}")
         created = []
         skipped_for_history = 0
         skipped_for_size = []
+        excluded = []
 
         for symbol in symbols:
             ind = features.compute_for(conn, symbol)
             if ind is None:
                 skipped_for_history += 1
+                continue
+
+            if has_discontinuity(ind):
+                excluded.append((symbol, ind["max_jump"], ind["max_jump_date"]))
                 continue
 
             for rule, direction in evaluate(ind):
@@ -179,6 +237,15 @@ def run(dry_run=False, symbols=None, **kwargs):
             print(f"[signals]   {symbol:<12} {rule:<18} {direction:<5} entry {entry:>9.2f} x{size}")
         if skipped_for_history:
             print(f"[signals] {skipped_for_history} symbol(s) skipped for thin history")
+        if excluded:
+            print(
+                f"[signals] {len(excluded)} symbol(s) excluded — price discontinuity inside "
+                f"the indicator window (unadjusted split or demerger):"
+            )
+            for symbol, jump, when in sorted(excluded):
+                # Magnitude only: max_jump() is absolute, so a signed format would
+                # print "+65%" for what was a 65% drop.
+                print(f"[signals]   {symbol:<12} {jump:.0%} move on {when}")
         if skipped_for_size:
             names = ", ".join(sorted(set(skipped_for_size)))
             print(

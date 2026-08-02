@@ -1,2 +1,6 @@
 python-dotenv
 requests
+
+# Fallback price source when NSE's bhavcopy is unreachable or a backfill is too
+# large to fetch a day at a time. Pulls in pandas, which nothing else here needs.
+yfinance

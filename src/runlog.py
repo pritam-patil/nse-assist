@@ -74,13 +74,28 @@ def health_line(hours=24, conn=None):
     if not events:
         return None
 
-    ok = sorted({e["stage"] for e in events if e["status"] == "ok"})
-    failed = sorted({e["stage"] for e in events if e["status"] == "fail"})
+    # Latest outcome per stage, not every outcome in the window. A stage that failed
+    # at 09:00 and succeeded at 18:00 is working; reporting it as FAILED all day is
+    # how a health line becomes something people learn to ignore, so that the one
+    # time it matters they skip past it too.
+    #
+    # `events` is oldest-first, so the last write per stage wins. A trailing 'start'
+    # with no outcome after it means the process died mid-stage — worth its own word,
+    # because that is invisible in a tally of ok-versus-failed.
+    latest = {}
+    for event in events:
+        latest[event["stage"]] = event["status"]
+
+    ok = sorted(s for s, status in latest.items() if status == "ok")
+    failed = sorted(s for s, status in latest.items() if status == "fail")
+    incomplete = sorted(s for s, status in latest.items() if status == "start")
 
     parts = [f"{len(ok)} stage(s) ok" if ok else "no stages completed"]
     if failed:
         parts.append(f"FAILED: {', '.join(failed)}")
-    else:
+    if incomplete:
+        parts.append(f"did not finish: {', '.join(incomplete)}")
+    if not failed and not incomplete:
         parts.append("no failures")
     return f"Health ({hours}h): " + " | ".join(parts)
 

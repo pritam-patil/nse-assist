@@ -10,7 +10,7 @@ import time
 
 import requests
 
-from src import config, funds, risk_config, runlog
+from src import config, fund_watchlist, funds, risk_config, runlog
 from src.db import get_connection, init_db
 from src.journal import open_positions, realised_pnl, summary
 from src.runlog import today
@@ -131,11 +131,12 @@ def build_report(conn, date):
         f"limits: {risk_config.MAX_DAILY_LOSS:,} loss / {risk_config.DAILY_PROFIT_TARGET:,} target"
     )
 
-    navs = funds.latest_navs(conn, config.FUND_SCHEME_CODES) if config.FUND_SCHEME_CODES else []
+    navs = funds.latest_navs(conn, fund_watchlist.SCHEME_CODES)
     if navs:
-        lines.append("\n<b>Fund NAVs</b>")
+        lines.append("\n<b>Parked cash — latest NAVs</b>")
         for nav in navs:
-            lines.append(f"<code>{html.escape(nav['scheme_code'])}</code> {nav['nav']:.4f} ({nav['date']})")
+            label = fund_watchlist.label_for(nav["scheme_code"])
+            lines.append(f"{html.escape(label)}\n   {nav['nav']:,.4f} ({nav['date']})")
 
     health = runlog.health_line()
     if health:

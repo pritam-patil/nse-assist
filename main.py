@@ -4,7 +4,8 @@ import argparse
 import sys
 import traceback
 
-from src import backtest, deliver, doctor, features, funds, ingest, journal, runlog, signals
+from src import backfill, backtest, deliver, doctor, features, funds, ingest, journal, runlog
+from src import signals, verify_data
 from src import db
 
 STAGES = {
@@ -13,6 +14,8 @@ STAGES = {
     "signals": signals,
     "scan": signals,  # alias: "run the scan" is what the signals stage does
     "backtest": backtest,
+    "backfill": backfill,
+    "verify-data": verify_data,
     "journal": journal,
     "funds": funds,
     "deliver": deliver,
@@ -24,8 +27,9 @@ STAGES = {
 #
 # 'backtest' is deliberately excluded: it replays years of history across the
 # whole universe, which takes minutes, and it answers a research question rather
-# than a daily one. Invoke it explicitly (--stage backtest). 'doctor' is likewise
-# a health check, not a pipeline step.
+# than a daily one. Invoke it explicitly (--stage backtest). 'doctor',
+# 'verify-data' and 'backfill' are likewise one-off tools, not pipeline steps —
+# backfill in particular re-downloads three years and would be absurd to run daily.
 ALL_STAGES = (ingest, features, signals, journal, funds, deliver)
 
 
@@ -41,6 +45,23 @@ def parse_args():
         "--dry-run",
         action="store_true",
         help="Run without writing to the database or sending to Telegram.",
+    )
+    parser.add_argument(
+        "--search",
+        metavar="TEXT",
+        help="Funds only: search AMFI's dump by scheme-name substring and print codes, "
+        "for building the watchlist in src/fund_watchlist.py.",
+    )
+    parser.add_argument(
+        "--history",
+        action="store_true",
+        help="Funds only: backfill NAV history from mfapi.in (third-party, best-effort).",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Backfill only: re-adjust every symbol regardless of what is stored. "
+        "Needed after changing which source outranks which.",
     )
     parser.add_argument(
         "--backfill",
@@ -61,7 +82,13 @@ def main():
         name = stage.__name__.split(".")[-1]
         runlog.log(name, "start")
         try:
-            stage.run(dry_run=args.dry_run, backfill=args.backfill)
+            stage.run(
+                dry_run=args.dry_run,
+                backfill=args.backfill,
+                force=args.force,
+                search_term=args.search,
+                history=args.history,
+            )
             runlog.log(name, "ok")
         except Exception as exc:
             # One stage failing must not block the others: a dead price feed should

@@ -14,11 +14,11 @@ AMFI NAV dump, and the Telegram Bot API. No API keys beyond the Telegram bot.
 ## Stages
 
 ```
-ingest    daily OHLCV for the universe             -> prices
+ingest    NSE bhavcopy -> yfinance fallback         -> prices
 features  SMA / RSI / ATR / relative volume        -> (computed, never stored)
 signals   rules -> dated, sized entries            -> signals
 journal   fills, exits, daily limits               -> paper_trades
-funds     AMFI NAV dump (needs FUND_SCHEME_CODES)  -> fund_navs
+funds     AMFI daily + mfapi.in history           -> fund_navs
 deliver   the day's report                         -> Telegram
 ```
 
@@ -46,13 +46,18 @@ python3 -m venv venv && ./venv/bin/pip install -r requirements.txt
 
 Copy `.env.example` to `.env` and fill in `TELEGRAM_BOT_TOKEN` and
 `TELEGRAM_CHAT_ID`. Everything else there is an optional override, with one
-exception worth setting: `FUND_SCHEME_CODES`. The funds stage skips entirely
-while it is empty, because storing all ~14k AMFI schemes daily would add about a
-megabyte a day to a database that gets committed after every run. Find a scheme's
-code by searching the dump:
+exception. Which fund schemes to track lives in `src/fund_watchlist.py`, committed
+alongside the universe and the risk limits. It ships with four placeholder schemes;
+replace them with what you actually hold. Find codes with:
 
 ```bash
-curl -s https://www.amfiindia.com/spages/NAVAll.txt | grep -i "parag parikh flexi"
+python main.py --stage funds --search "hdfc liquid"
+```
+
+Then pull back-history once (best-effort, third-party):
+
+```bash
+python main.py --stage funds --history
 ```
 
 Then run `--stage doctor`: it checks the environment, the live price feed, the
@@ -68,6 +73,10 @@ up as a reviewable diff instead of an invisible environment difference:
 
 - **`src/universe.py`** — the NIFTY 100 constituents. Fetching them would mean an
   index reconstitution silently changing what last night's scan looked at.
+- **`src/holidays_2026.py`** — NSE's published trading calendar. Ingest uses it to
+  decide whether a date had a session at all, and that answer must not change
+  because an API was briefly unreachable. It covers 2026 only and *raises* outside
+  that year rather than defaulting to "open".
 - **`src/risk_config.py`** — `capital_per_trade`, `max_daily_loss`,
   `daily_profit_target` and the sizing parameters derived from them. A backtest can
   then be re-run against the exact limits that were live at the time.
@@ -114,6 +123,48 @@ rows a day — as long as `FUND_SCHEME_CODES` stays narrow.
   1.0 and the pullback RSI band at 40/60 because the textbook values (1.2, and
   30/70) suppressed nearly every signal over ~800 sessions of testing. Re-measure
   with `--stage backtest` before moving them.
+- **Split-adjusted history outranks the exchange's own file.** `ingest.SOURCE_RANK`
+  is `yfinance-adj (3) > bhavcopy (2) > yfinance (1)`, enforced in the SQL conflict
+  clause so a concurrent writer cannot lose the rule. That looks backwards for a
+  second — bhavcopy is what actually traded — but this table feeds indicators, not
+  settlement, and every indicator reads a window of past closes. A raw series is
+  correct only at its right edge: the moment a symbol splits, its whole history is
+  wrong by the split factor. `--stage backfill` owns the history, `--stage ingest`
+  owns the right edge, and adjustment factors are 1.0 until a corporate action, so
+  the raw bar written each evening is correct as written.
+- **After a split, a symbol needs re-adjusting and date coverage cannot tell you.**
+  It still has every date it needs; only the basis went stale, and the sole symptom
+  is a cliff where adjusted history meets the raw tail.
+  `backfill.symbols_needing_readjustment()` finds those and re-fetches them, so an
+  ordinary run self-repairs. `--force` re-adjusts everything, which is what a change
+  to the ranking itself requires.
+- **auto_adjust is not trustworthy on its own.** Verified against bhavcopy: it fixes
+  splits correctly (KOTAKBANK 1:5, LICI 1:2) but TRENT came back with the factor
+  applied only from 2026-01-01 while the action was 2026-06-04, leaving a 33% cliff
+  *inside* the adjusted series, and VEDL's demerger came back with no adjustment at
+  all (adjusted/raw ratio exactly 1.0 across a 65% drop). Demergers are not splits,
+  so the second is arguably correct — the value really did leave — but both are
+  discontinuities that break a lookback window. `--stage verify-data` is the only
+  thing that catches either.
+- **Yahoo invents bars on NSE holidays.** Zero volume, open=high=low=close, previous
+  close carried forward. There were 518 of them in the first backfill. Left in, they
+  flatten RSI and drag the 20-day average volume down, so ingest rejects them on
+  arrival and purges any that are already stored. `--stage doctor` fails if either
+  invariant breaks.
+- **yfinance adjusts prices by default.** `auto_adjust` defaults to `True`, which
+  returns split- and dividend-adjusted values that silently disagree with
+  bhavcopy's raw traded prices. It is explicitly set to `False`, and its float32
+  widening (1307.800048828125 for a printed 1307.80) is rounded away.
+- **Fund NAVs do not share the equity calendar, or one with each other.** Liquid and
+  overnight funds price every day including weekends, because the underlying paper
+  accrues daily; arbitrage and duration funds price on business days only. On Sunday
+  2026-08-02 the liquid scheme had that day's NAV while the arbitrage one still
+  showed Friday. A missing day is therefore normal and never an error — the funds
+  stage reports what it stored and says nothing about what it did not.
+- **mfapi.in is a community service, not a dependency.** It supplies back-history
+  and nothing else. Every call is wrapped, a failure prints one line and continues,
+  and the fallback is that daily AMFI pulls accumulate history forward. Losing it
+  costs you a start date, not a stage.
 - **Corporate actions break symbols, not the feed.** Three NIFTY 100 tickers were
   already stale when this was written — Tata Motors demerged into TMPV and TMCV,
   United Spirits trades as UNITDSPR, and LTIM no longer resolves at all. When

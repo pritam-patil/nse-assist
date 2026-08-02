@@ -86,6 +86,31 @@ def atr(bars, period=ATR_PERIOD):
     return value
 
 
+# A close-to-close move past this inside the indicator window means the series has
+# a discontinuity — an unadjusted split, or a demerger the adjustment does not
+# cover. Above almost any real single-session move in a NIFTY 100 name.
+DISCONTINUITY_THRESHOLD = 0.25
+
+
+def max_jump(bars):
+    """Largest absolute close-to-close move in the window, as a (size, date) pair.
+
+    Only the bars the indicators actually read are examined. A cliff older than the
+    longest lookback is harmless — it has already scrolled out of every average —
+    so this shrinks back to zero on its own as a discontinuity ages out, rather
+    than banishing a symbol permanently for something that happened in 2023.
+    """
+    window = bars[-MIN_BARS:] if len(bars) > MIN_BARS else bars
+    worst, when = 0.0, None
+    for previous, current in zip(window, window[1:]):
+        if not previous["close"]:
+            continue
+        change = abs(current["close"] - previous["close"]) / previous["close"]
+        if change > worst:
+            worst, when = change, current["date"]
+    return worst, when
+
+
 def compute(bars):
     """Every indicator for one symbol's bar history, or None if there is not enough
     history to warm the longest lookback."""
@@ -96,6 +121,7 @@ def compute(bars):
     volumes = [bar["volume"] or 0 for bar in bars]
     last = bars[-1]
 
+    jump, jump_date = max_jump(bars)
     sma_fast = sma(closes, SMA_FAST)
     sma_slow = sma(closes, SMA_SLOW)
     # The same pair one bar back, so signals.py can tell a fresh crossover from a
@@ -122,6 +148,10 @@ def compute(bars):
         # a breakout on half the usual volume is mostly noise.
         "rel_volume": (last["volume"] / avg_volume) if avg_volume else None,
         "bars": len(bars),
+        # Largest close-to-close move inside the indicator window, and when. A value
+        # over DISCONTINUITY_THRESHOLD means every average here spans a price cliff.
+        "max_jump": jump,
+        "max_jump_date": jump_date,
     }
 
 
