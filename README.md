@@ -15,7 +15,7 @@ AMFI NAV dump, and the Telegram Bot API. No API keys beyond the Telegram bot.
 
 ```
 ingest    NSE bhavcopy -> yfinance fallback         -> prices
-features  SMA / RSI / ATR / relative volume        -> (computed, never stored)
+features  point-in-time indicators, as of a date  -> (computed, never stored)
 signals   rules -> dated, sized entries            -> signals
 journal   fills, exits, daily limits               -> paper_trades
 funds     AMFI daily + mfapi.in history           -> fund_navs
@@ -86,8 +86,32 @@ inherits price history, open signals and the ledger from the run before it. It i
 about 9 MB with the full universe backfilled, and grows slowly — a few hundred
 rows a day — as long as `FUND_SCHEME_CODES` stays narrow.
 
+## Tests
+
+```bash
+python -m unittest discover -s tests -t . -v
+```
+
+`tests/test_point_in_time.py` is the one that matters. It asserts that features
+computed as of date D are identical whether or not the table holds rows after D —
+tested both by deleting the future and by multiplying it tenfold, because deletion
+alone would let a bug that reads "the last row in the table" pass. Lookahead bias
+is the only failure here that produces a *wrong answer you believe*: a backtest
+that peeks forward still runs and still reports an edge. Everything else costs you
+a correct answer instead.
+
+The cache is the trap in that test, and it has its own case. `feature_frame()`
+memoises by as-of date, so a second computation served from cache would compare a
+value against itself and pass against any implementation, however broken.
+`test_cache_cannot_mask_a_leak` proves the cache genuinely does go stale, which is
+what makes the explicit `clear_cache()` calls meaningful rather than decorative.
+
 ## Things worth knowing before trusting a number
 
+- **A 52-week window is 252 sessions, and `MIN_BARS` is sized to make it real.**
+  Computing a "52-week high" from whatever history happens to exist answers a
+  different question quietly. That is why the minimum is 260 bars rather than the
+  210 the 200-day average alone would need.
 - **Sizing is volatility-based.** `risk_config.max_shares()` takes the smaller of a
   risk-derived and a capital-derived count, so a wider stop buys fewer shares rather
   than risking more money.
