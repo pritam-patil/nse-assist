@@ -346,6 +346,81 @@ def summarize(trades):
     }
 
 
+def decompose_exits(trades):
+    """Where the money actually went, split by how each trade ended.
+
+    A headline profit factor says a strategy loses; it does not say why, and the two
+    likely causes point at opposite fixes. If would-be winners are dying at the time
+    stop before reaching target, then widening the target makes truncation WORSE and
+    the lever is the holding horizon. If instead the shortfall is gap fills and
+    costs, the reward:risk geometry itself is what is broken. Same grid to sweep,
+    opposite reading of which combinations mean anything.
+
+    `realized_rr` is the number to compare against the nominal ratio: average win
+    over average loss, both as magnitudes. Nominal is what the levels promise;
+    realized is what the exits delivered.
+    """
+    by_reason = defaultdict(list)
+    for trade in trades:
+        by_reason[trade["exit_reason"]].append(trade)
+
+    breakdown = {}
+    for reason, group in by_reason.items():
+        pnls = [t["pnl"] for t in group]
+        winners = [p for p in pnls if p > 0]
+        breakdown[reason] = {
+            "trades": len(group),
+            "share": round(len(group) / len(trades), 4) if trades else 0.0,
+            "wins": len(winners),
+            "avg_pnl": round(sum(pnls) / len(pnls), 2),
+            "net": round(sum(pnls), 2),
+            "avg_gross": round(sum(t["gross_pnl"] for t in group) / len(group), 2),
+        }
+
+    # Stop exits that filled BELOW the stop: the gap cost, isolated.
+    gapped = [t for t in trades
+              if t["exit_reason"] == EXIT_STOP and t["exit_price"] < t["stop"]]
+    gap_cost = sum((t["stop"] - t["exit_price"]) * t["size"] for t in gapped)
+
+    # Time exits that were in profit when the clock ran out — winners the horizon
+    # truncated before they could reach target.
+    truncated = [t for t in trades if t["exit_reason"] == EXIT_TIME and t["gross_pnl"] > 0]
+
+    stats = summarize(trades)
+    nominal_rr = rules_config.TARGET_ATR_MULTIPLE / rules_config.STOP_ATR_MULTIPLE
+    realized_rr = (abs(stats["avg_win"] / stats["avg_loss"])
+                   if stats["avg_loss"] else float("inf"))
+    return {
+        "by_reason": breakdown,
+        "gapped_stops": len(gapped),
+        "gap_cost": round(gap_cost, 2),
+        "truncated_winners": len(truncated),
+        "truncated_gross": round(sum(t["gross_pnl"] for t in truncated), 2),
+        "nominal_rr": round(nominal_rr, 2),
+        "realized_rr": round(realized_rr, 2),
+        "cost_per_trade": round(stats["costs"] / stats["trades"], 2) if stats["trades"] else 0.0,
+    }
+
+
+def print_decomposition(label, trades):
+    if not trades:
+        return
+    d = decompose_exits(trades)
+    print(f"[backtest] --- {label}: where the money went ---")
+    for reason in (EXIT_TARGET, EXIT_STOP, EXIT_TIME):
+        row = d["by_reason"].get(reason)
+        if not row:
+            continue
+        print(f"[backtest]   {reason:<7} {row['trades']:>5} ({row['share']:>5.1%})  "
+              f"avg {row['avg_pnl']:>8,.0f}  net {row['net']:>11,.0f}  wins {row['wins']:>4}")
+    print(f"[backtest]   reward:risk nominal {d['nominal_rr']:.2f} vs realized "
+          f"{d['realized_rr']:.2f}   costs {d['cost_per_trade']:,.0f}/trade")
+    print(f"[backtest]   {d['gapped_stops']} stop(s) gapped through, costing "
+          f"{d['gap_cost']:,.0f} beyond the stop price")
+    print(f"[backtest]   {d['truncated_winners']} winner(s) cut short by the "
+          f"{MAX_HOLD_BARS}-session time stop, holding {d['truncated_gross']:,.0f} gross")
+
+
 def _row(label, stats):
     factor = "inf" if stats["profit_factor"] == float("inf") else f"{stats['profit_factor']:.2f}"
     return (f"{label:<24} {stats['trades']:>6} {stats['hit_rate'] * 100:>6.1f}% "
@@ -383,14 +458,20 @@ def run(dry_run=False, symbols=None, as_of=None, **kwargs):
         print(f"[backtest] {header}")
         print(f"[backtest] {'-' * len(header)}")
 
+        per_rule = {}
         for rule in signals.RULES:
             trades, _ = replay_rule(firings, bars_by_symbol, rule)
+            per_rule[rule] = trades
             print(f"[backtest] {_row(rule, summarize(trades))}")
 
         portfolio_trades, skipped = replay_portfolio(firings, bars_by_symbol)
         stats = summarize(portfolio_trades)
         print(f"[backtest] {'-' * len(header)}")
         print(f"[backtest] {_row('PORTFOLIO (assembled)', stats)}")
+
+        for rule, trades in per_rule.items():
+            print_decomposition(rule, trades)
+        print_decomposition("PORTFOLIO", portfolio_trades)
 
         _print_baseline(conn, portfolio_trades, stats)
         _print_survivorship_warning(len(bars_by_symbol), bars_by_symbol)

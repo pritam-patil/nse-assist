@@ -65,15 +65,27 @@ MAX_ABS_DAILY_RETURN = 0.20              # a 20% day is news; wait for it to set
 # when several fire on one symbol, and which candidate is dropped first when a
 # cumulative cap binds (smallest edge goes first).
 #
-# THESE ARE PLACEHOLDERS AND ARE NOT MEASURED. Every value is 0.0, which makes the
-# ordering fall through to the documented tie-breaks rather than encode a guess.
-# Ranking rules by a number somebody invented is worse than not ranking them: it
-# looks like evidence. Burst 8 replaces these with out-of-sample results, and until
-# it does, no rule is claimed to beat another.
+# INTERIM — FULL-SAMPLE BURST 7 VALUES, PENDING OVERWRITE BY BURST 8.
+#
+# Measured, so they beat the zeros they replace: assembly now prefers the one rule
+# that makes money, which is right regardless of how the number was obtained.
+#
+# But they are IN-SAMPLE and therefore systematically rosy. These rules were written
+# while looking at this same history, so the thresholds have already been fitted to
+# it once, informally, by the person choosing them. Full-sample expectancy measures
+# how well a rule describes the past, not how well it predicts. Burst 8's
+# out-of-sample values are the honest ones and its persist-on-every-cycle step
+# overwrites this block; the distinction is marked here rather than remembered,
+# because a number in a config file loses its provenance the moment nobody
+# remembers where it came from.
+#
+# Source: --stage backtest, per-rule isolated replay, 2023-07-13 to 2026-07-31,
+# 99 symbols, net of costs and slippage.
+RULE_EXPECTANCY_BASIS = "full-sample (Burst 7), interim"
 RULE_EXPECTANCY = {
-    "momentum_continuation": 0.0,
-    "oversold_reversion": 0.0,
-    "volume_breakout": 0.0,
+    "momentum_continuation": -72.0,   # 1,230 trades, PF 0.85 — negative, and a large sample
+    "oversold_reversion": 121.0,      #   105 trades, PF 1.33 — the only positive rule
+    "volume_breakout": -106.0,        #   613 trades, PF 0.79 — negative, large sample
 }
 
 # Applied when expectancies tie, which is currently always. A tighter stop means
@@ -121,6 +133,7 @@ def assert_consistent():
     if not 0 < REVERSION_MAX_RSI < 50:
         raise RuntimeError("reversion_max_rsi outside a sane oversold band")
     return (
+        f"expectancy {RULE_EXPECTANCY_BASIS}, "
         f"{TARGET_ATR_MULTIPLE / STOP_ATR_MULTIPLE:.1f}:1 reward:risk, "
         f"stop {STOP_ATR_MULTIPLE} ATR, momentum vol {MOMENTUM_MIN_VOLUME_RATIO}x, "
         f"breakout vol {BREAKOUT_MIN_VOLUME_RATIO}x, reversion RSI {REVERSION_MAX_RSI:.0f}"

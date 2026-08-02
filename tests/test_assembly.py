@@ -69,12 +69,34 @@ class DedupeTestCase(unittest.TestCase):
         self.assertIn(signals.BREAKOUT, confirming)
 
     def test_tiebreak_prefers_the_tighter_stop(self):
-        """With expectancies tied — which is currently always — the closer stop
-        wins: less risked per share for the same ATR view."""
-        wide = candidate("AAA", signals.MOMENTUM, stop=900.0)
-        tight = candidate("AAA", signals.BREAKOUT, stop=980.0)
-        result = signals.assemble_portfolio([wide, tight])
-        self.assertEqual(result["portfolio"][0]["rule"], signals.BREAKOUT)
+        """With expectancies tied, the closer stop wins: less risked per share for
+        the same ATR view.
+
+        The tie is forced rather than assumed. This test used to rely on every
+        configured expectancy being 0.0, so it silently changed meaning the moment
+        Burst 7 measured them — testing expectancy precedence instead of the
+        tie-break it names. A test whose subject depends on a config value is a test
+        you cannot trust the name of.
+        """
+        original = dict(rules_config.RULE_EXPECTANCY)
+        try:
+            for rule in rules_config.RULE_EXPECTANCY:
+                rules_config.RULE_EXPECTANCY[rule] = 0.0
+            wide = candidate("AAA", signals.MOMENTUM, stop=900.0)
+            tight = candidate("AAA", signals.BREAKOUT, stop=980.0)
+            result = signals.assemble_portfolio([wide, tight])
+            self.assertEqual(result["portfolio"][0]["rule"], signals.BREAKOUT)
+        finally:
+            rules_config.RULE_EXPECTANCY.clear()
+            rules_config.RULE_EXPECTANCY.update(original)
+
+    def test_measured_expectancy_now_drives_the_choice(self):
+        """With Burst 7 values in place, the positive rule must win a symbol it
+        shares with a negative one, whatever the stops look like."""
+        loser = candidate("AAA", signals.MOMENTUM, stop=990.0)   # tighter stop...
+        winner = candidate("AAA", signals.REVERSION, stop=900.0)
+        result = signals.assemble_portfolio([loser, winner])
+        self.assertEqual(result["portfolio"][0]["rule"], signals.REVERSION)
 
     def test_expectancy_outranks_the_tiebreak(self):
         """When Burst 8 fills in measured expectancies, they must dominate."""
