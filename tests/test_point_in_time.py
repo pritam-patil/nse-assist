@@ -228,6 +228,55 @@ class PointInTimeTestCase(unittest.TestCase):
         second = features.feature_frame(self.conn, as_of=self.as_of, symbols=[SYMBOL])
         self.assertNotEqual(float(second["close"].iloc[0]), -999.0)
 
+    # --- the two filters must stay one rule ---
+
+    def test_in_memory_filter_matches_the_sql_filter(self):
+        """bars_as_of() and load_bars(as_of=) must select identically.
+
+        There are two implementations of "up to this date": a WHERE clause for the
+        database and a list comprehension for the backtest, which walks thousands of
+        dates per symbol and cannot afford a query each. Two implementations of one
+        rule is how a guarantee rots — someone fixes the SQL and not the other. This
+        pins them together across the whole range, including dates with no bar.
+        """
+        every = features.load_bars(self.conn, SYMBOL, as_of=None)
+        probes = [self.bars[i]["date"] for i in (0, 1, 50, SPLIT_INDEX, BARS - 1)]
+        probes.append((date.fromisoformat(self.as_of) + timedelta(days=1)).isoformat())
+        probes.append("2019-01-01")
+
+        for probe in probes:
+            with self.subTest(as_of=probe):
+                self.assertEqual(features.bars_as_of(every, probe),
+                                 features.load_bars(self.conn, SYMBOL, as_of=probe))
+
+    def test_compute_as_of_matches_compute_for(self):
+        """The two entry points must produce the same features for the same date."""
+        every = features.load_bars(self.conn, SYMBOL, as_of=None)
+        for offset in (0, 7, 40):
+            probe = self.bars[SPLIT_INDEX - offset]["date"]
+            with self.subTest(as_of=probe):
+                features.clear_cache()
+                self.assertEqual(features.compute_as_of(every, probe),
+                                 features.compute_for(self.conn, SYMBOL, as_of=probe))
+
+    def test_backtest_ignores_bars_after_as_of(self):
+        """The stage-level property: a backtest run as of D must not be moved by
+        anything dated later, however extreme."""
+        from src import backtest
+
+        every = features.load_bars(self.conn, SYMBOL, as_of=None)
+        for bar in every:
+            bar["symbol"] = SYMBOL
+        before = backtest.simulate_symbol(features.bars_as_of(every, self.as_of))
+
+        self._corrupt_after(self.as_of)
+        after_bars = features.load_bars(self.conn, SYMBOL, as_of=None)
+        for bar in after_bars:
+            bar["symbol"] = SYMBOL
+        after = backtest.simulate_symbol(features.bars_as_of(after_bars, self.as_of))
+
+        self.assertEqual(before, after)
+
     # --- boundaries ---
 
     def test_as_of_before_any_history_returns_none(self):

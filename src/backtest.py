@@ -1,9 +1,15 @@
 """Stage 4 — replays the rules over stored history to see what they would have done.
 
-Walk-forward and bar-by-bar: for each day, indicators are computed from bars up to
-and including that day only, so a rule never sees a price it could not have seen.
-Exits are checked on subsequent bars against the stop and target that were fixed at
-entry.
+Walk-forward and bar-by-bar: for each session, indicators are computed as of that
+session's date, so a rule never sees a price it could not have seen. Exits are then
+checked on subsequent bars against the stop and target fixed at entry.
+
+The as-of discipline is inherited, not reimplemented. Every indicator read goes
+through features.compute_as_of(), the same filter tests/test_point_in_time.py holds
+to account and asserts equivalent to the SQL path — so this stage cannot develop
+its own quietly-different idea of what "up to this date" means. It previously
+sliced the bar list positionally, which was correct but rested on the slice being
+right rather than on anything tested.
 
 One deliberate pessimism: when a bar's range covers both the stop and the target,
 the stop is taken. Without intraday data there is no way to know which came first,
@@ -33,6 +39,7 @@ def simulate_symbol(bars, rule_names=None, max_hold_bars=MAX_HOLD_BARS, directio
 
     for index in range(features.MIN_BARS, len(bars)):
         bar = bars[index]
+        as_of = bar["date"]
 
         if open_trade:
             direction = open_trade["direction"]
@@ -83,7 +90,9 @@ def simulate_symbol(bars, rule_names=None, max_hold_bars=MAX_HOLD_BARS, directio
             # exit would need the intraday sequence we do not have.
             continue
 
-        ind = features.compute(bars[: index + 1])
+        # Only bars dated at or before this session. The exit checks above read
+        # `bar` itself, which is this session and therefore also in the past.
+        ind = features.compute_as_of(bars, as_of)
         for rule, direction in signals.evaluate(ind, rules=rule_names, directions=directions):
             if rule not in rule_names:
                 continue
@@ -193,7 +202,7 @@ def _print_survivorship_warning(conn, tested):
     )
 
 
-def run(dry_run=False, symbols=None, rule_names=None, directions=None, **kwargs):
+def run(dry_run=False, symbols=None, rule_names=None, directions=None, as_of=None, **kwargs):
     """Backtests each rule separately, then the portfolio as a whole. Read-only:
     nothing is written to signals or paper_trades."""
     symbols = symbols or universe.UNIVERSE
@@ -204,7 +213,9 @@ def run(dry_run=False, symbols=None, rule_names=None, directions=None, **kwargs)
         tested = 0
 
         for symbol in symbols:
-            bars = features.load_bars(conn, symbol)
+            # An explicit as_of backtests the world as it looked on that date: nothing
+            # after it is even loaded, so no later step can accidentally reach it.
+            bars = features.load_bars(conn, symbol, as_of=as_of)
             if len(bars) < features.MIN_BARS + MAX_HOLD_BARS:
                 continue
             for bar in bars:
@@ -215,7 +226,8 @@ def run(dry_run=False, symbols=None, rule_names=None, directions=None, **kwargs)
         print(f"[backtest] {tested} symbol(s), risk: {risk_config.as_dict()}")
         _print_survivorship_warning(conn, tested)
         print(f"[backtest] config: rules={rule_names or list(signals.ENABLED_RULES)} "
-              f"directions={directions or list(signals.ENABLED_DIRECTIONS)}")
+              f"directions={directions or list(signals.ENABLED_DIRECTIONS)}"
+              f"{f' as_of={as_of}' if as_of else ''}")
         print(f"[backtest] costs: {costs.describe_example(risk_config.CAPITAL_PER_TRADE)}")
         header = (f"{'rule':<20} {'trades':>7} {'win%':>7} {'gross':>11} {'costs':>10} "
                   f"{'net':>11} {'exp':>7}")

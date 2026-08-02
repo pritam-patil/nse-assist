@@ -290,8 +290,33 @@ def compute(bars):
 
 
 def compute_for(conn, symbol, as_of=None):
-    """Indicators for one symbol as of `as_of`."""
+    """Indicators for one symbol as of `as_of`, read from the database."""
     return compute(load_bars(conn, symbol, as_of=as_of))
+
+
+def bars_as_of(bars, as_of):
+    """The in-memory equivalent of load_bars()'s `date <= as_of` clause.
+
+    A backtest walks thousands of as-of dates per symbol; going back to SQLite for
+    each one would be tens of thousands of queries to re-read history that has not
+    changed. So the same filter exists here, over a list already in memory.
+
+    Two implementations of one rule is exactly how a point-in-time guarantee rots —
+    the SQL path gets fixed and the in-memory one does not. tests/ therefore asserts
+    the two agree bar-for-bar across a range of dates, so they cannot drift apart
+    silently. Filtering on the date rather than a positional index is deliberate:
+    an index is only equivalent while the caller's list is complete and sorted, and
+    a date means the same thing regardless.
+    """
+    if as_of is None:
+        return list(bars)
+    cutoff = _iso(as_of)
+    return [bar for bar in bars if bar["date"] <= cutoff]
+
+
+def compute_as_of(bars, as_of):
+    """Indicators from an in-memory bar list, as of `as_of`."""
+    return compute(bars_as_of(bars, as_of))
 
 
 # --- tidy frame, cached per date ----------------------------------------------
