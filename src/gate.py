@@ -260,8 +260,15 @@ def build_gate(conn, as_of=None):
     lines = [
         "EVALUATION GATE — five pre-committed criteria, all must hold",
         f"  frozen {cfg.GATE_FROZEN_ON}, {cfg.GATE_BASIS}",
-        "",
     ]
+
+    # Above the criteria, not below them. A FAIL produced by a rule that was
+    # enabled to exercise the plumbing is not a strategy failing evaluation, and
+    # the two are indistinguishable from the verdict alone.
+    banner = cfg.pipeline_test_banner()
+    if banner:
+        lines.append(f"  {banner}")
+    lines.append("")
 
     for index, row in enumerate(rows, start=1):
         trend = f"   ({row['trend']})" if row["trend"] else ""
@@ -280,11 +287,18 @@ def build_gate(conn, as_of=None):
         failed = [r["label"] for r in rows if r["status"] == FAIL]
         lines.append(f"  VERDICT: FAIL — {len(failed)} criterion(s) not met.")
         lines.append(f"  Failing: {'; '.join(failed)}")
-        lines.append(
-            "  This is the gate working, not the project failing. The rules go back "
-            "for another walk-forward cycle, or the system stays paper-only. The "
-            "outcome it prevented was finding this out with real money."
-        )
+        if cfg.active_pipeline_tests():
+            lines.append(
+                "  EXPECTED. The only enabled rule is running as a pipeline test and "
+                "was already measured as losing out-of-sample. This FAIL confirms the "
+                "gate counts correctly; it is not a finding about the strategy."
+            )
+        else:
+            lines.append(
+                "  This is the gate working, not the project failing. The rules go back "
+                "for another walk-forward cycle, or the system stays paper-only. The "
+                "outcome it prevented was finding this out with real money."
+            )
     else:
         pending = [r["label"] for r in rows if r["status"] == INSUFFICIENT]
         lines.append(f"  VERDICT: IN PROGRESS — {len(pending)} criterion(s) lack data.")

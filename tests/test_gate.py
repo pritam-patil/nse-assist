@@ -332,12 +332,38 @@ class GateTestCase(unittest.TestCase):
             self.assertIn(f"{n}.", text)
 
     def test_a_fail_is_described_as_the_system_working(self):
-        """The week it prints FAIL is the week nobody wants to read it."""
-        self._full_sample(win=-100)
-        text = gate.build_gate(self.conn, self.day)
-        self.assertIn("VERDICT: FAIL", text)
-        self.assertIn("gate working", text)
-        self.assertIn("paper-only", text)
+        """The week it prints FAIL is the week nobody wants to read it.
+
+        Forces the pipeline-test flag off rather than reading the live config: the
+        two FAIL messages say different things on purpose, and a test that picks
+        one by whatever happens to be enabled today asserts nothing.
+        """
+        saved = rules_config.RULE_ENABLED.copy()
+        rules_config.RULE_ENABLED.update({r: False for r in rules_config.PIPELINE_TEST_RULES})
+        try:
+            self._full_sample(win=-100)
+            text = gate.build_gate(self.conn, self.day)
+            self.assertIn("VERDICT: FAIL", text)
+            self.assertIn("gate working", text)
+            self.assertIn("paper-only", text)
+        finally:
+            rules_config.RULE_ENABLED.clear()
+            rules_config.RULE_ENABLED.update(saved)
+
+    def test_a_fail_during_a_pipeline_test_is_marked_expected(self):
+        """A losing record from a rule enabled to exercise the plumbing is not a
+        strategy failing evaluation, and the verdict alone cannot tell them apart."""
+        saved = rules_config.RULE_ENABLED.copy()
+        rules_config.RULE_ENABLED.update({r: True for r in rules_config.PIPELINE_TEST_RULES})
+        try:
+            self._full_sample(win=-100)
+            text = gate.build_gate(self.conn, self.day)
+            self.assertIn("VERDICT: FAIL", text)
+            self.assertIn("EXPECTED", text)
+            self.assertIn("not a finding about the strategy", text)
+        finally:
+            rules_config.RULE_ENABLED.clear()
+            rules_config.RULE_ENABLED.update(saved)
 
     def test_a_pass_does_not_read_as_permission_to_trade(self):
         self._full_sample(win=500, loss=100, hit_rate=MATCHING_HIT_RATE)
@@ -374,6 +400,74 @@ class WeeklyIntegrationTestCase(unittest.TestCase):
             self.assertIn("all must hold", text)
         finally:
             conn.close()
+
+
+class PipelineTestBannerTestCase(unittest.TestCase):
+    """A rule enabled to exercise the plumbing must never read as a strategy view.
+
+    The risk is entirely one of impression: an enabled flag and a losing paper
+    record look identical whether the rule was believed in or deliberately known to
+    lose. Three weeks after anyone remembers setting it, only the banner
+    distinguishes them.
+    """
+
+    def test_the_banner_names_the_rule_and_the_date(self):
+        banner = rules_config.pipeline_test_banner()
+        self.assertIsNotNone(banner, "no pipeline test active — adjust this suite")
+        self.assertIn("momentum_continuation", banner)
+        self.assertIn(rules_config.PIPELINE_TEST_SINCE, banner)
+
+    def test_the_banner_says_it_is_not_a_strategy_view(self):
+        banner = rules_config.pipeline_test_banner()
+        self.assertIn("not a strategy view", banner)
+        self.assertIn("expected outcome", banner)
+
+    def test_the_banner_carries_the_measured_loss(self):
+        """Without the number, 'this is a test' is a reassurance rather than a
+        fact the reader can check."""
+        self.assertIn("-257", rules_config.pipeline_test_banner())
+
+    def test_the_banner_is_silent_when_no_test_is_running(self):
+        saved = rules_config.RULE_ENABLED.copy()
+        rules_config.RULE_ENABLED.update(
+            {r: False for r in rules_config.PIPELINE_TEST_RULES})
+        try:
+            self.assertIsNone(rules_config.pipeline_test_banner())
+        finally:
+            rules_config.RULE_ENABLED.clear()
+            rules_config.RULE_ENABLED.update(saved)
+
+    def test_a_listed_but_disabled_rule_does_not_count_as_active(self):
+        """PIPELINE_TEST_RULES is the roster; RULE_ENABLED decides. A rule left on
+        the roster after the test ended must not keep announcing itself."""
+        saved = rules_config.RULE_ENABLED.copy()
+        rules_config.RULE_ENABLED["momentum_continuation"] = False
+        try:
+            self.assertNotIn("momentum_continuation", rules_config.active_pipeline_tests())
+        finally:
+            rules_config.RULE_ENABLED.clear()
+            rules_config.RULE_ENABLED.update(saved)
+
+    def test_every_scheduled_message_carries_it(self):
+        """Four messages, one helper, so they cannot describe the same flag
+        differently."""
+        from src import brief, deliver, weekly
+
+        conn = get_connection(":memory:")
+        init_db(conn)
+        try:
+            for text in (brief.build_brief(conn),
+                         deliver.build_report(conn, "2026-08-02"),
+                         weekly.build_weekly(conn, "2026-08-02")):
+                with self.subTest(message=text.splitlines()[0][:30]):
+                    self.assertIn("PIPELINE TEST ACTIVE", text)
+        finally:
+            conn.close()
+
+    def test_the_enabled_rule_is_the_one_that_fires_often_enough(self):
+        """274 out-of-sample trades against 35 and 88. A test that produces four
+        fills in six weeks exercises nothing."""
+        self.assertEqual(rules_config.PIPELINE_TEST_RULES, ("momentum_continuation",))
 
 
 if __name__ == "__main__":

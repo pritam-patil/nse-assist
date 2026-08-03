@@ -66,6 +66,22 @@ def check_rules():
     return rules_config.assert_consistent()
 
 
+def check_pipeline_test():
+    """Whether a rule is enabled as a systems test rather than a strategy view.
+
+    Reported, never failed. It is a deliberate state — the point is that it stays
+    visible, because an enabled flag looks identical to a strategy decision three
+    weeks after anyone remembers setting it.
+    """
+    from src import rules_config
+
+    active = rules_config.active_pipeline_tests()
+    if not active:
+        return "none active"
+    return (f"{', '.join(active)} enabled as a pipeline test since "
+            f"{rules_config.PIPELINE_TEST_SINCE} — a losing paper record is expected")
+
+
 def check_sizing_coverage():
     """How much of the universe can actually be sized at the current capital.
 
@@ -474,6 +490,7 @@ def run(dry_run=False, **kwargs):
         _check("risk", check_risk),
         _check("costs", check_costs),
         _check("rules", check_rules),
+        _check("pipeline-test", check_pipeline_test),
         _check("secrets", check_secrets),
         _check("sizing", check_sizing_coverage),
         _check("calendar", check_calendar),

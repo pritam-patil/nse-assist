@@ -112,6 +112,10 @@ def build_weekly(conn, day=None):
 
     lines = [f"nse-assist weekly — {end}"]
 
+    banner = rules_config.pipeline_test_banner()
+    if banner:
+        lines.append(f"\n{banner}")
+
     if not total:
         lines.append("\nNo closed paper trades yet.")
         if not signals.ENABLED_RULES:
