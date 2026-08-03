@@ -88,8 +88,9 @@ def parse_args():
     parser.add_argument(
         "--force",
         action="store_true",
-        help="Backfill only: re-adjust every symbol regardless of what is stored. "
-        "Needed after changing which source outranks which.",
+        help="Backfill: re-adjust every symbol regardless of what is stored, needed "
+        "after changing which source outranks which. Deliver: send the evening "
+        "report again even though one already went out for this session.",
     )
     parser.add_argument(
         "--require-bhavcopy",
