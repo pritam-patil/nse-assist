@@ -79,7 +79,8 @@ def check_pipeline_test():
     if not active:
         return "none active"
     return (f"{', '.join(active)} enabled as a pipeline test since "
-            f"{rules_config.PIPELINE_TEST_SINCE} — a losing paper record is expected")
+            f"{rules_config.PIPELINE_TEST_SINCE}, review "
+            f"{rules_config.PIPELINE_TEST_REVIEW_ON} — a losing paper record is expected")
 
 
 def check_sizing_coverage():

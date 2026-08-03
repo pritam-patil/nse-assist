@@ -389,16 +389,31 @@ def apply_verdicts(judgements):
 
     enabled = {rule: judgement["verdict"] == "SURVIVES" for rule, judgement in judgements.items()}
 
-    # A pipeline test lives in RULE_ENABLED, which this function rewrites wholesale
-    # from fresh verdicts. That is correct — the test SHOULD end when the rules are
-    # re-judged — but it would otherwise end silently, weeks later, with nobody
-    # remembering the flag had been set deliberately.
-    ending = [r for r in rules_config.active_pipeline_tests() if not enabled.get(r, False)]
-    if ending:
-        print(f"[walkforward] NOTE: this disables {', '.join(ending)}, which "
-              f"{'was' if len(ending) == 1 else 'were'} enabled as a pipeline test "
-              f"since {rules_config.PIPELINE_TEST_SINCE}. The test ends here — clear "
-              f"PIPELINE_TEST_RULES too if it is finished.")
+    # A PIPELINE TEST SURVIVES THIS FUNCTION.
+    #
+    # apply_verdicts rewrites RULE_ENABLED wholesale from fresh verdicts, and a
+    # rule enabled as a pipeline test will always be judged DISABLE — that is why
+    # it was chosen. So running this would silently end the test, weeks later, and
+    # the only symptom would be sentiment annotation quietly stopping.
+    #
+    # The verdict is still authoritative for every rule that is not a declared
+    # test. Ending a test is a deliberate act, so it requires the deliberate edit:
+    # remove the rule from PIPELINE_TEST_RULES in rules_config.py. A flag here
+    # would let it happen in passing, which is the thing being prevented.
+    #
+    # If a test rule ever SURVIVES, the verdict wins and it is enabled on merit —
+    # at which point it is a real rule and the test is over anyway.
+    preserved = []
+    for rule in rules_config.active_pipeline_tests():
+        if not enabled.get(rule, False):
+            enabled[rule] = True
+            preserved.append(rule)
+    if preserved:
+        print(f"[walkforward] KEPT ENABLED: {', '.join(preserved)} — judged DISABLE, "
+              f"as expected, but running as a pipeline test since "
+              f"{rules_config.PIPELINE_TEST_SINCE}. The verdict is recorded; the flag "
+              f"is not changed. To end the test, remove the rule from "
+              f"PIPELINE_TEST_RULES in src/rules_config.py.")
     expectancy = {rule: round(judgement["expectancy"], 1) for rule, judgement in judgements.items()}
     # Out-of-sample hit rates, persisted for the same reason the expectancies are.
     # Before this they were computed, printed once, and thrown away — leaving the

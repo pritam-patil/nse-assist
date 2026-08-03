@@ -531,6 +531,122 @@ class EmptyScorecardExplanationTestCase(unittest.TestCase):
                 self.assertEqual(bool(rules), "every rule disabled" not in text)
 
 
+class PipelineTestSurvivesWalkforwardTestCase(unittest.TestCase):
+    """apply_verdicts must not end the test in passing.
+
+    A rule enabled as a pipeline test will always be judged DISABLE — that is why
+    it was chosen. So rewriting RULE_ENABLED from fresh verdicts would silently
+    switch it off, and the only symptom would be sentiment annotation quietly
+    stopping weeks later. Ending the test is a deliberate act and requires the
+    deliberate edit.
+    """
+
+    def _judgement(self, verdict):
+        return {"verdict": verdict, "expectancy": -257.2,
+                "combined": {"hit_rate": 0.3212}}
+
+    def test_a_disable_verdict_does_not_switch_off_a_pipeline_test(self):
+        from src import walkforward
+
+        written = {}
+        real_read = pathlib.Path.read_text
+        real_write = pathlib.Path.write_text
+        pathlib.Path.write_text = lambda self, text, *a, **k: written.update(text=text)
+        try:
+            enabled, _, _ = walkforward.apply_verdicts(
+                {r: self._judgement("DISABLE") for r in rules_config.RULE_EXPECTANCY})
+        finally:
+            pathlib.Path.write_text = real_write
+            pathlib.Path.read_text = real_read
+
+        for rule in rules_config.active_pipeline_tests():
+            with self.subTest(rule=rule):
+                self.assertTrue(enabled[rule], f"{rule} was silently disabled")
+
+    def test_non_test_rules_still_follow_the_verdict(self):
+        """The verdict stays authoritative for everything not declared a test."""
+        from src import walkforward
+
+        real_write = pathlib.Path.write_text
+        pathlib.Path.write_text = lambda self, text, *a, **k: None
+        try:
+            enabled, _, _ = walkforward.apply_verdicts(
+                {r: self._judgement("DISABLE") for r in rules_config.RULE_EXPECTANCY})
+        finally:
+            pathlib.Path.write_text = real_write
+
+        for rule in rules_config.RULE_EXPECTANCY:
+            if rule not in rules_config.PIPELINE_TEST_RULES:
+                with self.subTest(rule=rule):
+                    self.assertFalse(enabled[rule])
+
+    def test_the_test_has_a_review_date_rather_than_running_open_ended(self):
+        from datetime import date
+
+        review = date.fromisoformat(rules_config.PIPELINE_TEST_REVIEW_ON)
+        since = date.fromisoformat(rules_config.PIPELINE_TEST_SINCE)
+        self.assertGreater(review, since)
+        # Long enough for the sentiment gate's 60 annotated trades at the measured
+        # 0.72 trades/session — about 17 weeks — not the paper gate's 8.
+        self.assertGreaterEqual((review - since).days, 100)
+
+    def test_the_banner_carries_the_review_date(self):
+        """"Since August" with no end reads as permanent."""
+        self.assertIn(rules_config.PIPELINE_TEST_REVIEW_ON,
+                      rules_config.pipeline_test_banner())
+
+
+class NegativeCohortVisibilityTestCase(unittest.TestCase):
+    """The count is not the binding constraint; the negative cohort is."""
+
+    def setUp(self):
+        handle, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(handle)
+        self.conn = get_connection(self.path)
+        init_db(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+        os.unlink(self.path)
+
+    def _scored_trade(self, score, pnl, symbol=None):
+        symbol = symbol or f"S{abs(hash((score, pnl))) % 99999}"
+        cursor = self.conn.execute(
+            "INSERT INTO signals (date, symbol, rule, direction, entry, stop, target, "
+            "size, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("2026-07-27", symbol, "momentum_continuation", "long",
+             100.0, 95.0, 110.0, 10, "taken", "x"))
+        self.conn.execute(
+            "INSERT INTO paper_trades (signal_id, entry_date, entry_price, exit_date, "
+            "exit_price, exit_reason, pnl, status) VALUES (?,?,?,?,?,?,?,?)",
+            (cursor.lastrowid, "2026-07-28", 100.0, "2026-07-30", 105.0, "target",
+             pnl, "closed"))
+        sentiment.store(self.conn, cursor.lastrowid, symbol, "2026-07-27", score, "r",
+                        [{"title": "h"}])
+        self.conn.commit()
+
+    def test_the_negative_count_is_reported_beside_the_total(self):
+        self._scored_trade(-0.5, -100, symbol="N1")
+        self._scored_trade(0.5, 100, symbol="P1")
+        text = sentiment_scorecard.build_scorecard(self.conn)
+        self.assertIn("1 with a negative score", text)
+
+    def test_an_all_positive_sample_says_the_count_cannot_answer_the_question(self):
+        """60 trades with zero negatives answers nothing, and a momentum rule
+        selects for good news — so this may not resolve on its own."""
+        for i in range(5):
+            self._scored_trade(0.3, 100, symbol=f"P{i}")
+        text = sentiment_scorecard.build_scorecard(self.conn)
+        self.assertIn("No negative-sentiment trades yet", text)
+        self.assertIn("however high it goes", text)
+
+    def test_the_warning_disappears_once_a_negative_trade_exists(self):
+        self._scored_trade(0.3, 100, symbol="P1")
+        self._scored_trade(-0.3, -100, symbol="N1")
+        self.assertNotIn("No negative-sentiment trades yet",
+                         sentiment_scorecard.build_scorecard(self.conn))
+
+
 
 if __name__ == "__main__":
     unittest.main()
