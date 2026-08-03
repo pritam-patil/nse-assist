@@ -31,7 +31,7 @@ backtest, and it belongs in the reader's head too.
 
 from datetime import datetime, time, timedelta, timezone
 
-from src import deliver, health, risk_config, rules_config, sentiment, signals
+from src import deliver, health, message, risk_config, rules_config, sentiment, signals
 from src.db import get_connection, init_db
 from src.runlog import today
 
@@ -145,7 +145,7 @@ def build_brief(conn, date=None):
     signal_date, candidates = enabled_signals(conn, date)
     kept, dropped, risk_used = trim_to_daily_loss(candidates)
 
-    lines = [f"nse-assist brief — {today()}"]
+    lines = [message.title(message.MORNING)]
     notes = {}
     lines.append(timing_note())
 

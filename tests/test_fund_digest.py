@@ -10,6 +10,7 @@ opinion the reader has no way to disagree with.
 """
 
 import os
+import pathlib
 import tempfile
 import unittest
 
@@ -124,9 +125,13 @@ class DigestTestCase(unittest.TestCase):
             self.assertIn(name, text)
 
     def test_single_scheme_categories_are_called_out(self):
+        """Wording changed when the prose was trimmed; the substance did not. The
+        assertion is on what a reader must learn — that a lone scheme cannot be
+        ranked — rather than on the sentence that happens to carry it."""
         text = fund_digest.build_digest(self.conn, ["119091"])
-        self.assertIn("Only one scheme in", text)
+        self.assertIn("One scheme only", text)
         self.assertIn("describes nothing", text)
+        self.assertIn("Add a second to compare", text)
 
     def test_labels_are_not_truncated_mid_word(self):
         from src import fund_watchlist
@@ -195,6 +200,85 @@ class WeeklyIntegrationTestCase(unittest.TestCase):
             self.assertIn("PARKED CASH", weekly.build_weekly(conn, "2026-08-02"))
         finally:
             conn.close()
+
+
+class WatchlistShapeTestCase(unittest.TestCase):
+    """The watchlist has to support the ranking, or the digest describes nothing.
+
+    A category with one scheme scores 0.50 and reads "1 of 1" — correct, and
+    useless. These pin the shape that makes the composite mean something, so a
+    future edit that drops back to one per category fails here rather than
+    silently producing a report full of neutral scores.
+    """
+
+    def test_the_rankable_categories_hold_at_least_two_schemes(self):
+        from collections import Counter
+
+        from src import fund_watchlist
+
+        counts = Counter(fund_watchlist.CATEGORIES.values())
+        for category in ("Liquid Fund", "Arbitrage Fund"):
+            with self.subTest(category=category):
+                self.assertGreaterEqual(
+                    counts[category], fund_digest.MIN_SCHEMES_TO_RANK,
+                    f"{category} cannot be ranked with fewer than "
+                    f"{fund_digest.MIN_SCHEMES_TO_RANK} schemes")
+
+    def test_paired_categories_span_more_than_one_fund_house(self):
+        """Two schemes from the same AMC compares a treasury desk against itself."""
+        from src import fund_watchlist
+
+        for category in ("Liquid Fund", "Arbitrage Fund"):
+            labels = [fund_watchlist.LABELS[c]
+                      for c, cat in fund_watchlist.CATEGORIES.items() if cat == category]
+            houses = {label.split()[0] for label in labels}
+            with self.subTest(category=category):
+                self.assertGreater(len(houses), 1, f"{category}: all from {houses}")
+
+    def test_a_ranked_category_produces_distinct_composites(self):
+        """Two schemes must actually separate. Identical scores would mean the
+        weighting is not discriminating and the rank is arbitrary."""
+        rows = [metrics(consistency=1.0, vol=0.002, worst=0.001, ret=0.060),
+                metrics(consistency=0.9, vol=0.009, worst=-0.003, ret=0.066)]
+        scores = fund_digest.composite_scores(rows)
+        self.assertNotEqual(scores[0], scores[1])
+
+
+class WatchlistIsNotEnvironmentConfigTestCase(unittest.TestCase):
+    """Which funds are tracked is a committed decision, not a setting.
+
+    FUND_SCHEME_CODES used to be parsed by config.py, mapped into two workflows and
+    documented in .env.example — and read by nothing. Setting it changed no
+    behaviour and produced no error. Config that looks live and is not is worse
+    than no config at all, because it invites a change that silently does nothing.
+
+    These guard the removal: the name must stay gone, and the committed list must
+    stay the only source.
+    """
+
+    SOURCE = pathlib.Path(__file__).resolve().parent.parent
+
+    def test_the_dead_environment_variable_is_gone(self):
+        for relative in ("src/config.py", ".env.example",
+                         ".github/workflows/evening.yml", ".github/workflows/sunday.yml"):
+            with self.subTest(file=relative):
+                self.assertNotIn("FUND_SCHEME_CODES", (self.SOURCE / relative).read_text())
+
+    def test_no_module_reads_a_scheme_list_from_the_environment(self):
+        """The failure was config parsed but unread. This catches it being
+        reintroduced anywhere, not just where it was."""
+        for path in (self.SOURCE / "src").glob("*.py"):
+            with self.subTest(module=path.name):
+                self.assertNotIn("FUND_SCHEME_CODES", path.read_text())
+
+    def test_the_committed_watchlist_is_the_only_source(self):
+        from src import fund_watchlist
+
+        self.assertTrue(fund_watchlist.SCHEME_CODES)
+        self.assertEqual(
+            fund_watchlist.SCHEME_CODES,
+            tuple(code for code, _, _ in fund_watchlist.WATCHLIST))
+
 
 
 if __name__ == "__main__":

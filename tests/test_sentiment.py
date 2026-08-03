@@ -451,5 +451,86 @@ class IdempotencyTestCase(unittest.TestCase):
             conn.close()
 
 
+class EmptyScorecardExplanationTestCase(unittest.TestCase):
+    """The count is easy; the reason for it is what goes stale.
+
+    This sentence read "with every rule disabled, nothing is being assembled" for
+    a day after a rule was enabled — in the same message that carried a banner
+    naming the enabled rule four paragraphs above. A count with a wrong
+    explanation is worse than a count alone, because the explanation is the part a
+    reader acts on. Each branch now has a test.
+    """
+
+    def setUp(self):
+        handle, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(handle)
+        self.conn = get_connection(self.path)
+        init_db(self.conn)
+        from src import signals
+
+        self._saved = signals.ENABLED_RULES
+
+    def tearDown(self):
+        from src import signals
+
+        signals.ENABLED_RULES = self._saved
+        self.conn.close()
+        os.unlink(self.path)
+
+    def _enable(self, *rules):
+        from src import signals
+
+        signals.ENABLED_RULES = rules
+
+    def _scored_signal(self, symbol="AAA", trade_status=None):
+        cursor = self.conn.execute(
+            "INSERT INTO signals (date, symbol, rule, direction, entry, stop, target, "
+            "size, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            ("2026-08-03", symbol, "momentum_continuation", "long",
+             100.0, 95.0, 110.0, 10, "proposed", "x"))
+        sentiment.store(self.conn, cursor.lastrowid, symbol, "2026-08-03", 0.1, "r",
+                        [{"title": "h"}])
+        if trade_status:
+            self.conn.execute(
+                "INSERT INTO paper_trades (signal_id, entry_date, entry_price, status) "
+                "VALUES (?,?,?,?)", (cursor.lastrowid, "2026-08-03", 100.0, trade_status))
+        self.conn.commit()
+
+    def test_with_no_rules_enabled_it_says_nothing_is_being_assembled(self):
+        self._enable()
+        self.assertIn("every rule disabled", sentiment_scorecard._why_empty(self.conn))
+
+    def test_with_a_rule_enabled_and_nothing_scored_it_says_so(self):
+        self._enable("momentum_continuation")
+        text = sentiment_scorecard._why_empty(self.conn)
+        self.assertIn("None has been", text)
+        self.assertNotIn("every rule disabled", text)
+
+    def test_scored_candidates_awaiting_a_fill_are_named(self):
+        """The live case that was being misdescribed."""
+        self._enable("momentum_continuation")
+        self._scored_signal()
+        text = sentiment_scorecard._why_empty(self.conn)
+        self.assertIn("1 candidate(s) scored", text)
+        self.assertIn("next open", text)
+        self.assertNotIn("every rule disabled", text)
+
+    def test_open_positions_are_named(self):
+        self._enable("momentum_continuation")
+        self._scored_signal(trade_status="open")
+        text = sentiment_scorecard._why_empty(self.conn)
+        self.assertIn("1 position(s) still open", text)
+
+    def test_the_explanation_never_contradicts_the_enabled_state(self):
+        """The invariant behind all four: a report must not say rules are disabled
+        while one is enabled."""
+        for rules in ((), ("momentum_continuation",)):
+            with self.subTest(enabled=rules):
+                self._enable(*rules)
+                text = sentiment_scorecard._why_empty(self.conn)
+                self.assertEqual(bool(rules), "every rule disabled" not in text)
+
+
+
 if __name__ == "__main__":
     unittest.main()

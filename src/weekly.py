@@ -25,7 +25,8 @@ and showing it beside the cumulative number is what keeps it in proportion.
 
 from datetime import date, timedelta
 
-from src import backtest, deliver, fund_digest, gate, health, ledger, risk_config, rules_config
+from src import backtest, deliver, fund_digest, gate, health, ledger, message
+from src import risk_config, rules_config
 from src import sentiment_scorecard, signals
 from src.db import get_connection, init_db
 from src.runlog import today
@@ -110,7 +111,7 @@ def build_weekly(conn, day=None):
     cohorts = cohort_stats(conn)
     versus = benchmark_comparison(conn)
 
-    lines = [f"nse-assist weekly — {end}"]
+    lines = [message.title(message.WEEKLY)]
 
     banner = rules_config.pipeline_test_banner()
     if banner:
@@ -124,6 +125,28 @@ def build_weekly(conn, day=None):
                 "validation, so nothing is being proposed and nothing will fill. "
                 "The ledger starts when a rule is re-enabled."
             )
+        else:
+            # What is actually pending. "No closed trades" alone reads the same
+            # whether three positions are queued to fill tomorrow or nothing has
+            # fired for a fortnight, and those need different responses.
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM signals WHERE status = 'proposed'").fetchone()[0]
+            live = conn.execute(
+                "SELECT COUNT(*) FROM paper_trades WHERE status = 'open'").fetchone()[0]
+            if pending or live:
+                parts = []
+                if pending:
+                    parts.append(f"{pending} signal(s) proposed and waiting to fill "
+                                 "at the next open")
+                if live:
+                    parts.append(f"{live} position(s) open")
+                lines.append(f"{' and '.join(parts).capitalize()}. "
+                             "The first close will start the gate's clock.")
+            else:
+                lines.append(
+                    f"{len(signals.ENABLED_RULES)} rule(s) enabled but nothing has "
+                    "fired or filled yet."
+                )
     else:
         lines.append(f"\nPER RULE (week of {since} to {end}, then cumulative)")
         lines.append(f"  {'rule':<24}{'wk n':>6}{'wk net':>10}"
@@ -177,7 +200,7 @@ def build_weekly(conn, day=None):
         difference = versus["net"] - (versus["index_pnl"] or 0)
         lines.append(f"  difference    {difference:>12,.0f}")
 
-    lines.append("\n" + gate.build_gate(conn, day))
+    lines.append("\n" + gate.build_gate(conn, day, include_banner=False))
 
     # Shadow only: nothing in this block changed a trade, which is what makes
     # it a measurement rather than a performance report.

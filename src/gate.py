@@ -44,7 +44,7 @@ a trend cannot drift out of sync with the number it describes.
 
 from datetime import date, timedelta
 
-from src import backtest, deliver, ledger, rules_config
+from src import backtest, deliver, ledger, message as msg, rules_config
 from src.db import get_connection, init_db
 from src.runlog import today
 
@@ -252,7 +252,7 @@ def verdict(rows):
     return VERDICT_IN_PROGRESS
 
 
-def build_gate(conn, as_of=None):
+def build_gate(conn, as_of=None, include_banner=True):
     rows, now, _ = criteria(conn, as_of)
     result = verdict(rows)
     cfg = rules_config
@@ -265,7 +265,10 @@ def build_gate(conn, as_of=None):
     # Above the criteria, not below them. A FAIL produced by a rule that was
     # enabled to exercise the plumbing is not a strategy failing evaluation, and
     # the two are indistinguishable from the verdict alone.
-    banner = cfg.pipeline_test_banner()
+    # Suppressed when the weekly embeds this: that message already carries the
+    # banner in its own header, and saying it twice in one report is how a line
+    # stops being read.
+    banner = cfg.pipeline_test_banner() if include_banner else None
     if banner:
         lines.append(f"  {banner}")
     lines.append("")
@@ -320,9 +323,9 @@ def run(dry_run=False, date=None, **kwargs):
     conn = get_connection()
     try:
         init_db(conn)
-        message = f"nse-assist evaluation gate — {date or today()}\n\n{build_gate(conn, date)}"
-        deliver.send_message(message, dry_run=dry_run, parse_mode=None)
-        print(f"[gate] sent ({len(message)} chars)" if not dry_run else "[gate] dry run")
-        return message
+        text = f"{msg.title(msg.GATE)}\n\n{build_gate(conn, date)}"
+        deliver.send_message(text, dry_run=dry_run, parse_mode=None)
+        print(f"[gate] sent ({len(text)} chars)" if not dry_run else "[gate] dry run")
+        return text
     finally:
         conn.close()

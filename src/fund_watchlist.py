@@ -44,9 +44,24 @@ PARKING_CATEGORIES = (
 # Direct/Growth schemes from large houses, chosen so the stage does something
 # useful out of the box. Replace them with the schemes you actually hold — use
 # --search to find codes.
+# TWO PER CATEGORY WHERE POSSIBLE, AND FROM DIFFERENT HOUSES.
+#
+# A category holding one scheme cannot be ranked: the digest scores it 0.50 and
+# calls it 1 of 1, which describes nothing. Two is the minimum at which "steadier"
+# and "jumpier" mean anything, and putting them in different fund houses keeps the
+# comparison from measuring one AMC's treasury desk against itself.
+#
+# The second liquid and arbitrage schemes were also chosen for a property the
+# incumbents lack: neither restates its unit face value. Both HDFC schemes here
+# restate on 2015-08-30 (x100.04), so every window crossing that returns None and
+# their long-run figures are withheld. The SBI and Kotak series are continuous
+# from 2013, so the digest has at least one complete history to rank against in
+# each of those categories.
 WATCHLIST = (
     ("119091", "HDFC Liquid — Direct Growth", "Liquid Fund"),
+    ("119800", "SBI Liquid — Direct Growth", "Liquid Fund"),
     ("120364", "ICICI Pru Arbitrage — Direct Growth", "Arbitrage Fund"),
+    ("119771", "Kotak Arbitrage — Direct Growth", "Arbitrage Fund"),
     ("120676", "ICICI Pru Ultra Short Term — Direct Growth", "Ultra Short"),
     ("119092", "HDFC Money Market — Direct Growth", "Money Market"),
 )

@@ -27,7 +27,6 @@ jobs:
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      FUND_SCHEME_CODES: ${{ vars.FUND_SCHEME_CODES }}
 
     steps:
       - uses: actions/checkout@v4
