@@ -197,5 +197,48 @@ class WeeklyIntegrationTestCase(unittest.TestCase):
             conn.close()
 
 
+class WatchlistShapeTestCase(unittest.TestCase):
+    """The watchlist has to support the ranking, or the digest describes nothing.
+
+    A category with one scheme scores 0.50 and reads "1 of 1" — correct, and
+    useless. These pin the shape that makes the composite mean something, so a
+    future edit that drops back to one per category fails here rather than
+    silently producing a report full of neutral scores.
+    """
+
+    def test_the_rankable_categories_hold_at_least_two_schemes(self):
+        from collections import Counter
+
+        from src import fund_watchlist
+
+        counts = Counter(fund_watchlist.CATEGORIES.values())
+        for category in ("Liquid Fund", "Arbitrage Fund"):
+            with self.subTest(category=category):
+                self.assertGreaterEqual(
+                    counts[category], fund_digest.MIN_SCHEMES_TO_RANK,
+                    f"{category} cannot be ranked with fewer than "
+                    f"{fund_digest.MIN_SCHEMES_TO_RANK} schemes")
+
+    def test_paired_categories_span_more_than_one_fund_house(self):
+        """Two schemes from the same AMC compares a treasury desk against itself."""
+        from src import fund_watchlist
+
+        for category in ("Liquid Fund", "Arbitrage Fund"):
+            labels = [fund_watchlist.LABELS[c]
+                      for c, cat in fund_watchlist.CATEGORIES.items() if cat == category]
+            houses = {label.split()[0] for label in labels}
+            with self.subTest(category=category):
+                self.assertGreater(len(houses), 1, f"{category}: all from {houses}")
+
+    def test_a_ranked_category_produces_distinct_composites(self):
+        """Two schemes must actually separate. Identical scores would mean the
+        weighting is not discriminating and the rank is arbitrary."""
+        rows = [metrics(consistency=1.0, vol=0.002, worst=0.001, ret=0.060),
+                metrics(consistency=0.9, vol=0.009, worst=-0.003, ret=0.066)]
+        scores = fund_digest.composite_scores(rows)
+        self.assertNotEqual(scores[0], scores[1])
+
+
+
 if __name__ == "__main__":
     unittest.main()
