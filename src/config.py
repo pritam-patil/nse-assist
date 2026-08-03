@@ -34,13 +34,6 @@ INGEST_LOOKBACK_DAYS = int(os.environ.get("INGEST_LOOKBACK_DAYS") or 1500)
 # AMFI's full NAV dump: plain text, pipe-delimited, refreshed once each evening.
 AMFI_NAV_URL = os.environ.get("AMFI_NAV_URL") or "https://www.amfiindia.com/spages/NAVAll.txt"
 
-# Superseded by the committed watchlist in src/fund_watchlist.py — which schemes
-# you park cash in is a decision, not an environment difference. Kept only as an
-# override for a one-off run against a different set.
-FUND_SCHEME_CODES = tuple(
-    code.strip() for code in (os.environ.get("FUND_SCHEME_CODES") or "").split(",") if code.strip()
-)
-
 REQUEST_TIMEOUT_SECONDS = int(os.environ.get("REQUEST_TIMEOUT_SECONDS") or 20)
 
 # --- sentiment layer (observational, optional) ---------------------------------

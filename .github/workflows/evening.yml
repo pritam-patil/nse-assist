@@ -41,7 +41,6 @@ jobs:
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      FUND_SCHEME_CODES: ${{ vars.FUND_SCHEME_CODES }}
       # Optional. Absent, the sentiment stage no-ops — it is observational and
       # nothing downstream reads it, so a missing key must not fail the run.
       GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}

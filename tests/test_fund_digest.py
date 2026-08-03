@@ -10,6 +10,7 @@ opinion the reader has no way to disagree with.
 """
 
 import os
+import pathlib
 import tempfile
 import unittest
 
@@ -241,6 +242,42 @@ class WatchlistShapeTestCase(unittest.TestCase):
                 metrics(consistency=0.9, vol=0.009, worst=-0.003, ret=0.066)]
         scores = fund_digest.composite_scores(rows)
         self.assertNotEqual(scores[0], scores[1])
+
+
+class WatchlistIsNotEnvironmentConfigTestCase(unittest.TestCase):
+    """Which funds are tracked is a committed decision, not a setting.
+
+    FUND_SCHEME_CODES used to be parsed by config.py, mapped into two workflows and
+    documented in .env.example — and read by nothing. Setting it changed no
+    behaviour and produced no error. Config that looks live and is not is worse
+    than no config at all, because it invites a change that silently does nothing.
+
+    These guard the removal: the name must stay gone, and the committed list must
+    stay the only source.
+    """
+
+    SOURCE = pathlib.Path(__file__).resolve().parent.parent
+
+    def test_the_dead_environment_variable_is_gone(self):
+        for relative in ("src/config.py", ".env.example",
+                         ".github/workflows/evening.yml", ".github/workflows/sunday.yml"):
+            with self.subTest(file=relative):
+                self.assertNotIn("FUND_SCHEME_CODES", (self.SOURCE / relative).read_text())
+
+    def test_no_module_reads_a_scheme_list_from_the_environment(self):
+        """The failure was config parsed but unread. This catches it being
+        reintroduced anywhere, not just where it was."""
+        for path in (self.SOURCE / "src").glob("*.py"):
+            with self.subTest(module=path.name):
+                self.assertNotIn("FUND_SCHEME_CODES", path.read_text())
+
+    def test_the_committed_watchlist_is_the_only_source(self):
+        from src import fund_watchlist
+
+        self.assertTrue(fund_watchlist.SCHEME_CODES)
+        self.assertEqual(
+            fund_watchlist.SCHEME_CODES,
+            tuple(code for code, _, _ in fund_watchlist.WATCHLIST))
 
 
 
