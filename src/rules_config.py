@@ -146,6 +146,18 @@ RULE_ENABLED = {
 # silent.
 PIPELINE_TEST_RULES = ("momentum_continuation",)
 PIPELINE_TEST_SINCE = "2026-08-02"
+
+# When to look at this deliberately rather than let it run unexamined.
+#
+# Two clocks are running and they are different lengths. The paper gate needs 30
+# closed trades — about 8 weeks at the measured 0.72 trades/session. The sentiment
+# graduation gate needs 60 ANNOTATED closed trades, roughly 17 weeks, and it also
+# needs a negative-sentiment cohort that a momentum rule may never generate.
+#
+# So this date is the sentiment horizon, not the paper one, and reaching it with
+# no negative cohort is itself the finding: the layer cannot be evaluated on
+# trades from this rule, and would need a different one to produce them.
+PIPELINE_TEST_REVIEW_ON = "2026-12-01"
 PIPELINE_TEST_NOTE = (
     "momentum_continuation is enabled as a pipeline test, not a strategy view. "
     "Walk-forward measured it at -257 per trade out-of-sample. It is running to "
@@ -337,5 +349,5 @@ def pipeline_test_banner():
     active = active_pipeline_tests()
     if not active:
         return None
-    return (f"PIPELINE TEST ACTIVE since {PIPELINE_TEST_SINCE}: "
-            f"{', '.join(active)}. {PIPELINE_TEST_NOTE}")
+    return (f"PIPELINE TEST ACTIVE since {PIPELINE_TEST_SINCE}, review "
+            f"{PIPELINE_TEST_REVIEW_ON}: {', '.join(active)}. {PIPELINE_TEST_NOTE}")

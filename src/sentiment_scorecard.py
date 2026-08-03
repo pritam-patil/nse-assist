@@ -183,8 +183,27 @@ def build_scorecard(conn, as_of=None):
         lines.append(f"  {_why_empty(conn)}")
         return "\n".join(lines)
 
+    negative = sum(1 for t in trades if t["score"] < 0)
     lines.append(f"  {len(trades)} annotated closed trade(s) of "
-                 f"{cfg.SENTIMENT_MIN_ANNOTATED_TRADES} needed to judge")
+                 f"{cfg.SENTIMENT_MIN_ANNOTATED_TRADES} needed to judge, "
+                 f"{negative} with a negative score")
+    if not negative:
+        # THE BINDING CONSTRAINT, AND IT IS NOT THE HEADLINE COUNT.
+        #
+        # The graduation criterion compares negative-sentiment trades against the
+        # rest, so it needs both cohorts. The only rule currently generating
+        # annotations is momentum_continuation, which selects stocks within 3% of
+        # a 52-week high on 1.5x volume above the 50-day average — that is a
+        # filter for good news flow. It may never produce enough negative scores
+        # to compare, and 60 trades with zero negatives answers nothing.
+        #
+        # Said every week rather than discovered in month four.
+        lines.append(
+            "  No negative-sentiment trades yet. The gate compares that cohort "
+            "against the rest, so without one the count above cannot answer the "
+            "question however high it goes — and a momentum rule selects for "
+            "stocks with good news, so this may not resolve on its own."
+        )
 
     # Correlation, or the reason it is withheld.
     if len(trades) < MIN_TRADES_FOR_CORRELATION:
