@@ -18,7 +18,25 @@ name: evening
 
 on:
   schedule:
+    # THREE SLOTS, NOT ONE. GitHub's `schedule` is best-effort — the docs say
+    # events may be delayed or dropped under load, and measured here on
+    # 2026-08-03 that is not a rare edge: roughly 25 of 29 poll slots produced
+    # nothing at all, and this workflow's single 14:00 slot never fired on its
+    # first scheduled day. Everything that did fire was 25 minutes to 3h22 late.
+    #
+    # 14:00 UTC is 19:30 IST, 4 hours after the close. The retries are 15:07 and
+    # 16:13 — off the hour, where contention is worst, and spread rather than
+    # adjacent so a busy period does not swallow all three.
+    #
+    # The chain is idempotent, so a retry after a successful run is a no-op:
+    # ingest fetches forward from its watermark, signals skip what is already
+    # proposed, journal is INSERT OR IGNORE. The one thing that is NOT idempotent
+    # is your attention, which is why deliver.py guards on the session it last
+    # reported — three identical reports an hour apart is how the evening report
+    # stops being read.
     - cron: "0 14 * * 1-5"
+    - cron: "7 15 * * 1-5"
+    - cron: "13 16 * * 1-5"
   workflow_dispatch:
 
 # Shared with morning.yml and sunday.yml. All three commit output/nse.db, so they

@@ -225,12 +225,59 @@ def build_report(conn, date):
     return "\n".join(lines)
 
 
-def run(dry_run=False, **kwargs):
+# The session a report was last sent for. Keyed on the SESSION, not the calendar
+# day, so a run that catches up a missed Monday on Tuesday morning still counts as
+# having reported Monday.
+DELIVERED_KEY = "last_delivered_session"
+
+
+def already_delivered(conn, session):
+    """Has a report already gone out for this session?
+
+    The evening workflow is scheduled several times because GitHub drops scheduled
+    events — measured on 2026-08-03, roughly 25 of 29 poll slots and the single
+    evening slot produced nothing at all. Every stage in the chain is already
+    idempotent, so re-running is free; the one thing that is not idempotent is your
+    attention. Three identical reports an hour apart is how the evening report
+    stops being read, which costs more than the missed run it was insuring against.
+    """
+    from src.db import get_state
+
+    return session is not None and get_state(conn, DELIVERED_KEY) == session
+
+
+def mark_delivered(conn, session):
+    from src.db import set_state
+
+    if session:
+        set_state(conn, DELIVERED_KEY, session)
+        conn.commit()
+
+
+def run(dry_run=False, force=False, **kwargs):
+    """Send the evening report, once per session.
+
+    `force` re-sends regardless — for a manual dispatch when you actually want the
+    message again.
+    """
+    from src import health
+
     conn = get_connection()
     try:
         init_db(conn)
+        # The session reported on, not today's date: on a holiday or a catch-up run
+        # those differ, and the guard has to key on the one the numbers describe.
+        session = health.price_status(conn)["latest"]
+
+        if not force and already_delivered(conn, session):
+            print(f"[deliver] report for {session} already sent — skipping. "
+                  f"Use --force to send it again.")
+            return None
+
         report = build_report(conn, today())
         send_message(report, dry_run=dry_run)
+        if not dry_run:
+            mark_delivered(conn, session)
         print(f"[deliver] report sent ({len(report)} chars)" if not dry_run else "[deliver] dry run")
         return report
     finally:
