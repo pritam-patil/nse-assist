@@ -29,9 +29,13 @@ The weights are printed in the message. A composite whose recipe is hidden is an
 opinion with a decimal point.
 """
 
-from src import deliver, fund_watchlist, funds
+from src import deliver, fund_watchlist, funds, message as msg
 from src.db import get_connection, init_db
-from src.runlog import today
+
+# The one sentence that has to contain the words it disclaims. Named so the test
+# can assert its presence and then strip it before scanning the body for advice
+# language — otherwise the only way to pass is to delete the disclaimer.
+DISCLAIMER = "No scheme above is a recommendation to buy, sell or switch."
 
 # Stability outweighs return, and the two downside terms together outweigh
 # everything else. Return is deliberately smallest: across these schemes the spread
@@ -109,7 +113,7 @@ def build_digest(conn, scheme_codes=None):
         lines.append("  No fund metrics available. Run --stage funds first.")
         return "\n".join(lines)
 
-    unrankable = []
+    unrankable, withheld = [], []
     for category in sorted(grouped):
         rows = grouped[category]
         ordered = sorted(zip(rows, composite_scores(rows)), key=lambda pair: -pair[1])
@@ -125,9 +129,12 @@ def build_digest(conn, scheme_codes=None):
         # numbers no longer sit under their headings, which is worse than not
         # tabulating at all.
         for rank, (row, score) in enumerate(ordered, start=1):
-            lines.append(f"    {rank}. {row['label']}   composite {score:.2f}")
+            # Composite first: it is the sort key, so it belongs where the eye
+            # lands rather than at the end of the label.
+            mark = "*" if row.get("restatements") else " "
+            lines.append(f"    {score:.2f}{mark} {row['label']}")
             lines.append(
-                f"       1m {_pct(row.get('return_1m'), 0)}   "
+                f"         1m {_pct(row.get('return_1m'), 0)}   "
                 f"3m {_pct(row.get('return_3m'), 0)}   "
                 f"1y {_pct(row.get('return_1y'), 0)}   "
                 f"vol {_pct(row.get('vol_1y'), 0)}"
@@ -135,17 +142,11 @@ def build_digest(conn, scheme_codes=None):
             # Worst month first on its line: over a parking horizon the tail is what
             # you meet, and you meet it exactly when you want the money back.
             lines.append(
-                f"       worst month {_pct(row.get('worst_month_1y'), 0)}   "
+                f"         worst month {_pct(row.get('worst_month_1y'), 0)}   "
                 f"max drawdown {_pct(row.get('max_drawdown_1y'), 0)}   "
                 f"consistency {_pct(row.get('consistency_3m'), 0, 0)}"
             )
-        withheld = [r["label"] for r, _ in ordered if r.get("restatements")]
-        if withheld:
-            lines.append(
-                f"    Some figures withheld for {', '.join(withheld)}: the NAV series "
-                "changes unit face value part-way through, so a window crossing it "
-                "would measure a restatement rather than a return."
-            )
+        withheld.extend(r["label"] for r, _ in ordered if r.get("restatements"))
 
         # A different reason for the same n/a, and the two must not be confused: a
         # withheld figure means the scheme has the history and we decline to
@@ -158,10 +159,20 @@ def build_digest(conn, scheme_codes=None):
                     f"computed — too few NAVs stored, not a property of the scheme."
                 )
 
+    if withheld:
+        # One line for the whole report rather than one per category. The same
+        # sentence three times teaches you to skip it, and it is the sentence that
+        # explains why four columns read n/a.
+        lines.append(
+            f"\n  * some figures withheld — {', '.join(sorted(set(withheld)))} change "
+            "unit face value part-way through the series, so a window crossing it "
+            "would measure the restatement, not a return."
+        )
+
     if unrankable:
         lines.append(
-            f"\n  Only one scheme in: {', '.join(unrankable)}. A rank of 1 of 1 "
-            "describes nothing — add more to the watchlist to compare."
+            f"\n  One scheme only in {', '.join(unrankable)} — a rank of 1 of 1 "
+            "describes nothing. Add a second to compare."
         )
 
     note = funds.history_note(conn, scheme_codes)
@@ -169,28 +180,16 @@ def build_digest(conn, scheme_codes=None):
         lines.append(f"\n  {note}")
 
     weights = ", ".join(f"{name} {weight:.0%}" for name, weight in COMPOSITE_WEIGHTS.items())
-    lines.append(f"\n  Composite weights: {weights}.")
     lines.append(
-        "  Weighted toward stability rather than return: parked money is judged on "
-        "being available in full when wanted, so the worst month matters more than "
-        "the average."
+        f"\n  Composite weights: {weights} — stability over return, because parked "
+        "money is judged on being there in full when wanted."
     )
     lines.append(
-        "\n  These ranks describe how each scheme has behaved. They are not a "
-        "forecast, and past consistency does not carry forward."
+        "  Behaviour to date, not a forecast. Exit loads and tax are excluded: debt "
+        "schemes (liquid, money market, ultra short) are taxed at your slab rate, "
+        "arbitrage on the equity basis."
     )
-    lines.append(
-        "  Two things change what you keep and are not in the numbers above. Some "
-        "schemes charge an exit load if you redeem within a short window. And tax "
-        "differs by category: gains on debt-oriented schemes — liquid, money market, "
-        "ultra-short — are added to income and taxed at your slab rate whatever the "
-        "holding period, while arbitrage schemes are taxed on the equity basis "
-        "instead. Rates change; check the current position for your own situation."
-    )
-    lines.append(
-        "  No scheme above is a recommendation to buy, sell or switch. Ranks and "
-        "numbers only."
-    )
+    lines.append(f"  {DISCLAIMER} Ranks and numbers only.")
     return "\n".join(lines)
 
 
@@ -198,10 +197,10 @@ def run(dry_run=False, scheme_codes=None, **kwargs):
     conn = get_connection()
     try:
         init_db(conn)
-        message = f"nse-assist fund digest — {today()}\n\n{build_digest(conn, scheme_codes)}"
-        deliver.send_message(message, dry_run=dry_run, parse_mode=None)
-        print(f"[fund-digest] sent ({len(message)} chars)" if not dry_run
+        text = f"{msg.title(msg.FUNDS)}\n\n{build_digest(conn, scheme_codes)}"
+        deliver.send_message(text, dry_run=dry_run, parse_mode=None)
+        print(f"[fund-digest] sent ({len(text)} chars)" if not dry_run
               else "[fund-digest] dry run")
-        return message
+        return text
     finally:
         conn.close()

@@ -11,7 +11,8 @@ import time
 
 import requests
 
-from src import config, fund_watchlist, funds, health, risk_config, rules_config, signals
+from src import config, fund_watchlist, funds, health, message
+from src import risk_config, rules_config, signals
 from src.db import get_connection, init_db
 from src.journal import open_positions, realised_pnl, summary
 from src.runlog import today
@@ -152,7 +153,8 @@ def _todays_signals(conn, date):
 
 
 def build_report(conn, date):
-    lines = [f"<b>nse-assist — {date}</b>"]
+    header = message.title(message.EVENING)
+    lines = [f"<b>{html.escape(header.splitlines()[0])}</b>\n<i>{html.escape(header.splitlines()[1])}</i>"]
 
     banner = rules_config.pipeline_test_banner()
     if banner:

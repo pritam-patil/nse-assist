@@ -124,9 +124,13 @@ class DigestTestCase(unittest.TestCase):
             self.assertIn(name, text)
 
     def test_single_scheme_categories_are_called_out(self):
+        """Wording changed when the prose was trimmed; the substance did not. The
+        assertion is on what a reader must learn — that a lone scheme cannot be
+        ranked — rather than on the sentence that happens to carry it."""
         text = fund_digest.build_digest(self.conn, ["119091"])
-        self.assertIn("Only one scheme in", text)
+        self.assertIn("One scheme only", text)
         self.assertIn("describes nothing", text)
+        self.assertIn("Add a second to compare", text)
 
     def test_labels_are_not_truncated_mid_word(self):
         from src import fund_watchlist

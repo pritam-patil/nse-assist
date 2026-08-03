@@ -25,7 +25,8 @@ and showing it beside the cumulative number is what keeps it in proportion.
 
 from datetime import date, timedelta
 
-from src import backtest, deliver, fund_digest, gate, health, ledger, risk_config, rules_config
+from src import backtest, deliver, fund_digest, gate, health, ledger, message
+from src import risk_config, rules_config
 from src import sentiment_scorecard, signals
 from src.db import get_connection, init_db
 from src.runlog import today
@@ -110,7 +111,7 @@ def build_weekly(conn, day=None):
     cohorts = cohort_stats(conn)
     versus = benchmark_comparison(conn)
 
-    lines = [f"nse-assist weekly — {end}"]
+    lines = [message.title(message.WEEKLY)]
 
     banner = rules_config.pipeline_test_banner()
     if banner:
@@ -177,7 +178,7 @@ def build_weekly(conn, day=None):
         difference = versus["net"] - (versus["index_pnl"] or 0)
         lines.append(f"  difference    {difference:>12,.0f}")
 
-    lines.append("\n" + gate.build_gate(conn, day))
+    lines.append("\n" + gate.build_gate(conn, day, include_banner=False))
 
     # Shadow only: nothing in this block changed a trade, which is what makes
     # it a measurement rather than a performance report.
