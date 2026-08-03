@@ -1,16 +1,27 @@
 name: morning
 
-# 03:15 UTC = 08:45 IST, weekdays. Thirty minutes before the 09:15 open: enough time
-# to read the brief and place orders, late enough that it is the last thing you see
-# before the session rather than something from an hour ago.
+# 02:20 UTC = 07:50 IST, weekdays. 85 minutes before the 09:15 IST open.
 #
-# Reads only. Nothing here writes to the database, so unlike the evening run there
-# is nothing to commit — but it shares the concurrency group anyway, because a
-# morning run overlapping an evening rebase would read a file mid-rewrite.
+# WHY SO EARLY, AND WHY NOT ON THE HOUR
+#
+# GitHub gives no delivery guarantee on `schedule` — the docs say runs are delayed
+# during periods of high load, which is worst at the top of every hour. Measured
+# here on 2026-08-03: this workflow was scheduled for 03:15 UTC and ran at 06:37,
+# three hours and twenty-two minutes late. That put a brief written to be read
+# before the open into the middle of the session, describing fills that had
+# already happened.
+#
+# So: earlier, for slack, and off the hour to avoid the worst of the contention.
+# 85 minutes absorbs a delay that would have landed the old schedule post-open.
+#
+# THE CRON IS NOT THE FIX, IT IS THE MARGIN. No schedule can be relied on, so the
+# brief states the IST time it was generated and says so plainly when the market
+# has already opened — see src/brief.py. A late brief that admits it is late is
+# usable; a late brief that reads like a pre-open one is not.
 
 on:
   schedule:
-    - cron: "15 3 * * 1-5"
+    - cron: "20 2 * * 1-5"
   workflow_dispatch:
 
 concurrency:
