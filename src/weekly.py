@@ -125,6 +125,28 @@ def build_weekly(conn, day=None):
                 "validation, so nothing is being proposed and nothing will fill. "
                 "The ledger starts when a rule is re-enabled."
             )
+        else:
+            # What is actually pending. "No closed trades" alone reads the same
+            # whether three positions are queued to fill tomorrow or nothing has
+            # fired for a fortnight, and those need different responses.
+            pending = conn.execute(
+                "SELECT COUNT(*) FROM signals WHERE status = 'proposed'").fetchone()[0]
+            live = conn.execute(
+                "SELECT COUNT(*) FROM paper_trades WHERE status = 'open'").fetchone()[0]
+            if pending or live:
+                parts = []
+                if pending:
+                    parts.append(f"{pending} signal(s) proposed and waiting to fill "
+                                 "at the next open")
+                if live:
+                    parts.append(f"{live} position(s) open")
+                lines.append(f"{' and '.join(parts).capitalize()}. "
+                             "The first close will start the gate's clock.")
+            else:
+                lines.append(
+                    f"{len(signals.ENABLED_RULES)} rule(s) enabled but nothing has "
+                    "fired or filled yet."
+                )
     else:
         lines.append(f"\nPER RULE (week of {since} to {end}, then cumulative)")
         lines.append(f"  {'rule':<24}{'wk n':>6}{'wk net':>10}"

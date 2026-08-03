@@ -182,6 +182,40 @@ class WeeklyTestCase(unittest.TestCase):
         text = weekly.build_weekly(self.conn, self.day)
         self.assertIn("No closed paper trades yet", text)
 
+    def test_an_empty_ledger_says_what_is_pending(self):
+        """"No closed trades" alone reads the same whether three positions are
+        queued to fill tomorrow or nothing has fired for a fortnight, and those
+        need different responses."""
+        from src import signals
+
+        saved = signals.ENABLED_RULES
+        signals.ENABLED_RULES = ("momentum_continuation",)
+        try:
+            self.conn.execute(
+                "INSERT INTO signals (date, symbol, rule, direction, entry, stop, "
+                "target, size, status, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                (self.day, "AAA", "momentum_continuation", "long",
+                 100.0, 95.0, 110.0, 10, "proposed", "x"))
+            self.conn.commit()
+            text = weekly.build_weekly(self.conn, self.day)
+            self.assertIn("1 signal(s) proposed", text)
+            self.assertIn("start the gate's clock", text)
+        finally:
+            signals.ENABLED_RULES = saved
+
+    def test_an_empty_ledger_with_a_rule_enabled_does_not_claim_all_are_disabled(self):
+        """The contradiction this pair of fixes exists to prevent."""
+        from src import signals
+
+        saved = signals.ENABLED_RULES
+        signals.ENABLED_RULES = ("momentum_continuation",)
+        try:
+            text = weekly.build_weekly(self.conn, self.day)
+            self.assertNotIn("rules are disabled by walk-forward", text)
+            self.assertIn("nothing has fired or filled yet", text)
+        finally:
+            signals.ENABLED_RULES = saved
+
 
 if __name__ == "__main__":
     unittest.main()

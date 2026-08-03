@@ -138,6 +138,37 @@ def negative_cohort_gap(trades):
     }
 
 
+def _why_empty(conn):
+    """Why there is nothing to analyse yet — read from state, not assumed.
+
+    This sentence used to say "with every rule disabled, nothing is being
+    assembled", which was true when it was written and became a report arguing
+    with itself the moment a rule was enabled: the same message carried a banner
+    naming the enabled rule four paragraphs above. A count with a wrong
+    explanation is worse than a count alone, because the explanation is what a
+    reader acts on.
+    """
+    from src import signals
+
+    scored = conn.execute(
+        "SELECT COUNT(*) FROM news_sentiment WHERE score IS NOT NULL").fetchone()[0]
+    open_positions = conn.execute(
+        "SELECT COUNT(*) FROM paper_trades WHERE status = 'open'").fetchone()[0]
+
+    if not signals.ENABLED_RULES:
+        return ("With every rule disabled nothing is being assembled, so this stays "
+                "empty until a rule is re-enabled.")
+    if not scored:
+        return ("Candidates are scored each evening after assembly. None has been "
+                "scored yet.")
+    if open_positions:
+        return (f"{scored} candidate(s) scored, {open_positions} position(s) still "
+                "open. A score reaches this table when its trade closes.")
+    return (f"{scored} candidate(s) scored and none of their trades has closed yet — "
+            "a signal fills at the next open and runs to a stop, target or the "
+            "10-session time limit before it counts here.")
+
+
 def build_scorecard(conn, as_of=None):
     trades = annotated_trades(conn, as_of)
     cfg = rules_config
@@ -149,11 +180,7 @@ def build_scorecard(conn, as_of=None):
             f"  0 annotated closed trades. Needs {cfg.SENTIMENT_MIN_ANNOTATED_TRADES} "
             "before the question can be asked at all."
         )
-        lines.append(
-            "  The layer scores assembled candidates each evening and stores what it "
-            "saw. With every rule disabled, nothing is being assembled, so this "
-            "stays empty until a rule is re-enabled."
-        )
+        lines.append(f"  {_why_empty(conn)}")
         return "\n".join(lines)
 
     lines.append(f"  {len(trades)} annotated closed trade(s) of "
