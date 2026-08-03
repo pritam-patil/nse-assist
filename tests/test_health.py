@@ -123,10 +123,35 @@ class FreshnessTestCase(unittest.TestCase):
     # --- signals ---
 
     def test_no_signals_is_not_stale_while_every_rule_is_disabled(self):
-        """Reporting a decision as a fault. Nothing can fire, so nothing missing."""
-        status = health.signal_status(self.conn, now=EVENING)
-        self.assertFalse(status["stale"])
-        self.assertIn("disabled", status["detail"])
+        """Reporting a decision as a fault. Nothing can fire, so nothing missing.
+
+        Forces the disabled state rather than reading it: the whole point is the
+        branch taken when nothing is enabled, and that branch stops being exercised
+        the moment a rule is turned on for any reason.
+        """
+        from src import signals
+
+        saved = signals.ENABLED_RULES
+        signals.ENABLED_RULES = ()
+        try:
+            status = health.signal_status(self.conn, now=EVENING)
+            self.assertFalse(status["stale"])
+            self.assertIn("disabled", status["detail"])
+        finally:
+            signals.ENABLED_RULES = saved
+
+    def test_missing_signals_are_stale_once_a_rule_can_fire(self):
+        """The other half: with a rule enabled, an empty signals table IS a fault."""
+        from src import signals
+
+        saved = signals.ENABLED_RULES
+        signals.ENABLED_RULES = ("momentum_continuation",)
+        try:
+            status = health.signal_status(self.conn, now=EVENING)
+            self.assertIsNone(status["latest"])
+            self.assertIn("scan has not run", status["detail"])
+        finally:
+            signals.ENABLED_RULES = saved
 
 
 class FooterTestCase(unittest.TestCase):

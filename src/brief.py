@@ -31,7 +31,7 @@ backtest, and it belongs in the reader's head too.
 
 from datetime import datetime, time, timedelta, timezone
 
-from src import deliver, health, risk_config, sentiment, signals
+from src import deliver, health, risk_config, rules_config, sentiment, signals
 from src.db import get_connection, init_db
 from src.runlog import today
 
@@ -165,6 +165,13 @@ def build_brief(conn, date=None):
                 f"The signals below were computed on {signal_date} and have not been "
                 "recomputed since. Treat the levels as history, not as this morning's."
             )
+
+    # Directly under the header, above the candidates. This is the message that
+    # presents entries, stops and share counts as things to act on; the reader has
+    # to meet the caveat before the numbers, not after them.
+    banner = rules_config.pipeline_test_banner()
+    if banner:
+        lines.append(f"\n{banner}")
 
     if not signals.ENABLED_RULES:
         # Distinct from "nothing fired": nothing can fire. A reader who cannot tell

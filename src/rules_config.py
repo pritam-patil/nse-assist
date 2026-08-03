@@ -98,10 +98,60 @@ RULE_EXPECTANCY = {
 # Set by --stage walkforward --apply from out-of-sample verdicts. Left all-True
 # until a walk-forward run has actually judged them.
 RULE_ENABLED = {
-    "momentum_continuation": False,
+    "momentum_continuation": True,   # PIPELINE TEST — see below. Not a strategy view.
     "oversold_reversion": False,
     "volume_breakout": False,
 }
+
+# --- the pipeline test --------------------------------------------------------
+#
+# ══════════════════════════════════════════════════════════════════════════════
+#  momentum_continuation IS ENABLED AND IT IS KNOWN TO LOSE MONEY.
+#  This is a systems test. It is not a view that the rule works.
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Walk-forward judged it DISABLE: -257 per trade over 274 out-of-sample trades,
+# positive in 0 of 3 windows, -56.4% against an index that did -1.1%. Its
+# out-of-sample hit rate is 32.1% against a 42.9% break-even at the configured
+# 1.33:1 reward:risk. None of that has changed and none of it is expected to.
+#
+# WHY ENABLE IT ANYWAY
+#
+# The chain signals -> sentiment -> journal -> gate -> weekly has never run with a
+# real fill in it. Every part is unit-tested and no part has met live data. Paper
+# money makes the rupee cost of finding out exactly zero, and this rule is the one
+# that fires often enough to exercise anything — 274 out-of-sample trades against
+# 35 and 88 for the others.
+#
+# WHAT IT WILL AND WILL NOT TELL YOU
+#
+# It will tell you whether fills happen at the next open, whether exits resolve,
+# whether the evaluation gate counts what it should, whether sentiment annotates
+# the right candidates. It will tell you NOTHING about whether the rule works.
+# That question is already answered.
+#
+# THE GATE WILL FAIL, AND THAT IS THE EXPECTED RESULT
+#
+# In about six weeks this produces 30-odd closed trades with negative expectancy
+# and the gate will return FAIL. That is not new information and must not be read
+# as any. Every report carries a banner saying so, because in three weeks an
+# enabled flag looks like a strategy decision and a losing paper record looks like
+# a strategy being evaluated.
+#
+# HOW IT ENDS
+#
+# Set the flag back to False, or let `--stage walkforward --apply` do it — that
+# command rewrites RULE_ENABLED from fresh verdicts and will disable this rule
+# again, correctly. It prints a warning when it does, so the test ending is not
+# silent.
+PIPELINE_TEST_RULES = ("momentum_continuation",)
+PIPELINE_TEST_SINCE = "2026-08-02"
+PIPELINE_TEST_NOTE = (
+    "momentum_continuation is enabled as a pipeline test, not a strategy view. "
+    "Walk-forward measured it at -257 per trade out-of-sample. It is running to "
+    "exercise fills, exits and the gate with live data; a losing record is the "
+    "expected outcome and is not new information."
+)
 
 # Hit rate each rule achieved in the backtest, for the live-versus-backtest column
 # in --stage journal-report. Separate from RULE_EXPECTANCY because a rule can match
@@ -270,3 +320,22 @@ def assert_consistent():
         f"stop {STOP_ATR_MULTIPLE} ATR, momentum vol {MOMENTUM_MIN_VOLUME_RATIO}x, "
         f"breakout vol {BREAKOUT_MIN_VOLUME_RATIO}x, reversion RSI {REVERSION_MAX_RSI:.0f}"
     )
+
+
+def active_pipeline_tests():
+    """Enabled rules that are running as a systems test rather than a strategy view.
+
+    One function so the brief, the evening report, the weekly and the gate cannot
+    drift into describing the same flag differently — the whole risk here is a
+    reader forming a different impression from one message than another.
+    """
+    return tuple(r for r in PIPELINE_TEST_RULES if RULE_ENABLED.get(r))
+
+
+def pipeline_test_banner():
+    """The line every report carries while a test is running, or None."""
+    active = active_pipeline_tests()
+    if not active:
+        return None
+    return (f"PIPELINE TEST ACTIVE since {PIPELINE_TEST_SINCE}: "
+            f"{', '.join(active)}. {PIPELINE_TEST_NOTE}")

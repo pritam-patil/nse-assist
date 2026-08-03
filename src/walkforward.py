@@ -385,7 +385,20 @@ def apply_verdicts(judgements):
     path = pathlib.Path(__file__).with_name("rules_config.py")
     text = path.read_text()
 
+    from src import rules_config
+
     enabled = {rule: judgement["verdict"] == "SURVIVES" for rule, judgement in judgements.items()}
+
+    # A pipeline test lives in RULE_ENABLED, which this function rewrites wholesale
+    # from fresh verdicts. That is correct — the test SHOULD end when the rules are
+    # re-judged — but it would otherwise end silently, weeks later, with nobody
+    # remembering the flag had been set deliberately.
+    ending = [r for r in rules_config.active_pipeline_tests() if not enabled.get(r, False)]
+    if ending:
+        print(f"[walkforward] NOTE: this disables {', '.join(ending)}, which "
+              f"{'was' if len(ending) == 1 else 'were'} enabled as a pipeline test "
+              f"since {rules_config.PIPELINE_TEST_SINCE}. The test ends here — clear "
+              f"PIPELINE_TEST_RULES too if it is finished.")
     expectancy = {rule: round(judgement["expectancy"], 1) for rule, judgement in judgements.items()}
     # Out-of-sample hit rates, persisted for the same reason the expectancies are.
     # Before this they were computed, printed once, and thrown away — leaving the
