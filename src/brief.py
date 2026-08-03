@@ -29,9 +29,46 @@ that compounds — the gap between it and the fill is real slippage, measured in
 backtest, and it belongs in the reader's head too.
 """
 
+from datetime import datetime, time, timedelta, timezone
+
 from src import deliver, health, risk_config, sentiment, signals
 from src.db import get_connection, init_db
 from src.runlog import today
+
+
+# NSE's cash market opens at 09:15 IST. The brief is written to be read before
+# that; whether it actually is depends on GitHub's scheduler, which guarantees
+# nothing.
+MARKET_OPEN_IST = time(9, 15)
+
+
+def _ist_now():
+    return datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)
+
+
+def timing_note(now=None):
+    """States when the brief was generated, and whether that is still pre-open.
+
+    NO CRON CAN BE RELIED ON. Measured 2026-08-03: the morning workflow was
+    scheduled for 08:45 IST and ran at 12:07, three hours and twenty-two minutes
+    late, which turned a pre-open brief into a mid-session one describing fills
+    that had already happened. Moving the schedule earlier buys margin; it does
+    not buy a guarantee.
+
+    So the message says what time it is. A late brief that admits it is late is
+    still usable — you know the opens have gone and the estimates are history. A
+    late brief that reads exactly like an on-time one is worse than none, because
+    it invites you to act on levels the market has already passed.
+    """
+    now = now or _ist_now()
+    stamp = now.strftime("%H:%M IST")
+    if now.time() < MARKET_OPEN_IST:
+        minutes = ((MARKET_OPEN_IST.hour * 60 + MARKET_OPEN_IST.minute)
+                   - (now.hour * 60 + now.minute))
+        return f"Generated {stamp}, {minutes} minutes before the open."
+    return (f"LATE — generated {stamp}, after the 09:15 open. The entries below "
+            f"are estimates for opens that have already happened; treat them as a "
+            f"record of what was proposed, not as prices you can still get.")
 
 
 def enabled_signals(conn, date=None):
@@ -110,6 +147,7 @@ def build_brief(conn, date=None):
 
     lines = [f"nse-assist brief — {today()}"]
     notes = {}
+    lines.append(timing_note())
 
     # STALENESS GOES ABOVE THE SIGNALS, NOT IN THE FOOTER.
     #
