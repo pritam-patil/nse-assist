@@ -292,11 +292,25 @@ were IST fires five and a half hours early.
 
 | Workflow | Cron (UTC) | IST |
 |---|---|---|
-| `evening` | `0 14 * * 1-5` | 19:30 Mon–Fri |
-| `morning` | `15 3 * * 1-5` | 08:45 Mon–Fri |
+| `evening` | `0 14`, `7 15`, `13 16` `* * 1-5` | 19:30, 20:37, 21:43 Mon–Fri |
+| `morning` | `20 2 * * 1-5` | 07:50 Mon–Fri |
 | `sunday` | `0 14 * * 0` | 19:30 Sunday |
 | `doctor` | `30 3 * * 0` | 09:00 Sunday |
 | `poll` | `30 2 * * *`, `0,30 3-16 * * *` | 08:00–22:00 daily, every 30 min |
+
+**Scheduled runs are best-effort and this repo loses most of them.** Measured
+2026-08-03: roughly 25 of 29 poll slots produced nothing at all, the evening
+workflow's single slot never fired on its first scheduled day, and everything that
+did fire was 25 minutes to 3h22 late. GitHub's docs say the `schedule` event "may
+be delayed or dropped" under load, and the top of the hour is the worst minute for
+it.
+
+So `evening` has three slots rather than one, spread and off the hour. The chain is
+idempotent — ingest fetches forward from its watermark, signals skip what is
+already proposed, journal is `INSERT OR IGNORE` — so a retry after a successful run
+costs nothing. The exception is your attention: `deliver` records the session it
+last reported and skips a repeat, because three identical reports an hour apart is
+how the evening report stops being read. `--stage deliver --force` overrides it.
 
 All five share `concurrency: nse-assist-state` with `cancel-in-progress: false`.
 They all commit `output/nse.db`, and Telegram permits exactly one `getUpdates`
