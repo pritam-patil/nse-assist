@@ -34,9 +34,9 @@ on:
     # is your attention, which is why deliver.py guards on the session it last
     # reported — three identical reports an hour apart is how the evening report
     # stops being read.
-    - cron: "0 14 * * 1-5"
-    - cron: "7 15 * * 1-5"
-    - cron: "13 16 * * 1-5"
+    - cron: "0 12 * * 1-5"
+    - cron: "7 13 * * 1-5"
+    - cron: "13 15 * * 1-5"
   workflow_dispatch:
 
 # Shared with morning.yml and sunday.yml. All three commit output/nse.db, so they

@@ -21,7 +21,7 @@ name: morning
 
 on:
   schedule:
-    - cron: "20 2 * * 1-5"
+    - cron: "20 0 * * 1-5"
   workflow_dispatch:
 
 concurrency:
