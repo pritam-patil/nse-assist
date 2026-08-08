@@ -59,8 +59,8 @@ AMOUNT_TOLERANCE = 0.005
 # nowhere.
 NEARBY_DAYS = 5
 
-COLUMNS = ("symbol", "ex_date", "amount", "prev_close", "yield_pct",
-           "avg_volume_60d", "avg_price_60d", "prior_sessions")
+COLUMNS = ("symbol", "ex_date", "amount", "prev_date", "prev_close", "ex_close",
+           "yield_pct", "avg_volume_60d", "avg_price_60d", "prior_sessions")
 
 
 # --- extraction ---------------------------------------------------------------
@@ -87,7 +87,11 @@ def events_for(symbol, frame):
             "symbol": symbol,
             "ex_date": frame.at[position, "date"],
             "amount": amount,
+            # The prior session's DATE rides along so a study aligning against an
+            # index series can ask for the same two sessions, not "the day before".
+            "prev_date": prior["date"].iloc[-1] if len(prior) else pd.NaT,
             "prev_close": prev_close,
+            "ex_close": float(frame.at[position, "close"]),
             "yield_pct": amount / prev_close * 100 if prev_close == prev_close else float("nan"),
             "avg_volume_60d": float(prior["volume"].mean()) if len(prior) else float("nan"),
             "avg_price_60d": float(prior["close"].mean()) if len(prior) else float("nan"),
@@ -97,10 +101,15 @@ def events_for(symbol, frame):
 
 
 def cached_symbols():
-    """Symbols with a parquet in the cache; underscore files are metadata."""
+    """Symbols with a parquet in the cache.
+
+    Underscore files are metadata; caret files (^NSEI) are indices that share the
+    cache machinery but are not universe members — an index pays no dividend and
+    must not sit in the coverage denominator pretending to be a stock.
+    """
     return sorted(
         path.stem for path in fetch.CACHE_DIR.glob("*.parquet")
-        if not path.stem.startswith("_")
+        if not path.stem.startswith(("_", "^"))
     )
 
 
