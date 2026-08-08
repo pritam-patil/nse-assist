@@ -35,3 +35,39 @@ Descriptive statistics on history — no strategy is implied, and a ratio
 below 1.0 is a pre-tax, pre-cost observation about averages, not an edge.
 Regenerate with `python -m data.study_exdate`.
 <!-- study_exdate:end -->
+
+<!-- study_grid:start -->
+## Burst 4 — tune/validate split (2026-08-08)
+
+Trades through 2022-12-31 tune the grid (97,740 trades); 74,480 trades from later years validate it. Naive = no frictions, no taxes; friction-adjusted = the full cost model.
+
+![grid heatmaps](data/study_grid.png)
+
+12 of 35 cells are friction-positive on the tuning period; 12 of those stay positive in validation.
+
+### Selected cell: enter 20 sessions before ex-date, exit 0 after
+
+| period | n | median return | mean return | win rate |
+|---|---|---|---|---|
+| tune | 2,753 | +1.02% | +1.31% | 55% |
+| validate | 2,158 | +0.95% | +1.71% | 56% |
+
+Win rates within the selected cell (friction-adjusted):
+
+| yield | tune n | tune win | validate n | validate win |
+|---|---|---|---|---|
+| 0–0.5% | 1,142 | 56% | 1,099 | 55% |
+| 0.5–1% | 707 | 55% | 561 | 52% |
+| 1–2% | 523 | 52% | 328 | 59% |
+| ≥2% | 381 | 56% | 170 | 64% |
+
+| liquidity | tune n | tune win | validate n | validate win |
+|---|---|---|---|---|
+| low | 918 | 54% | 98 | 61% |
+| mid | 915 | 57% | 796 | 57% |
+| high | 920 | 55% | 1,264 | 55% |
+
+Liquidity buckets are terciles of 60-session average turnover with cutoffs fixed on the tuning period.
+
+**Verdict: a friction-adjusted edge survives out-of-sample in the selected cell** — e=20, x=0 keeps a median +0.95% per event (56% win rate, n=2,158) on years it never saw. The required caveat: a 20-session hold embeds market drift, so this is long-only beta plus perhaps something — an edge over CASH, not yet over the index. Burst 5 must subtract NIFTY over the same windows before this cell is called an anomaly.
+<!-- study_grid:end -->
