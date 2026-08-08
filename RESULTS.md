@@ -71,3 +71,23 @@ Liquidity buckets are terciles of 60-session average turnover with cutoffs fixed
 
 **Verdict: a friction-adjusted edge survives out-of-sample in the selected cell** — e=20, x=0 keeps a median +0.95% per event (56% win rate, n=2,158) on years it never saw. The required caveat: a 20-session hold embeds market drift, so this is long-only beta plus perhaps something — an edge over CASH, not yet over the index. Burst 5 must subtract NIFTY over the same windows before this cell is called an anomaly.
 <!-- study_grid:end -->
+
+<!-- study_stress:start -->
+## Burst 5 — stress battery and the benchmark (2026-08-08)
+
+Selected cell (e=20, x=0), validation period only, every trade paired with NIFTY over the identical dates (benchmark frictionless — the accounting leans against the strategy throughout).
+
+| stress | n | median net | median NIFTY | median excess | beat NIFTY |
+|---|---|---|---|---|---|
+| baseline | 2,158 | +0.95% | +0.73% | +0.20% | 51% |
+| slippage 2x | 2,158 | +0.78% | +0.73% | +0.03% | 50% |
+| slippage 3x | 2,158 | +0.61% | +0.73% | -0.13% | 49% |
+| ex bottom-liquidity tercile | 2,060 | +0.92% | +0.72% | +0.19% | 51% |
+| regular dividends only | 2,151 | +0.93% | +0.72% | +0.18% | 51% |
+| special dividends only | 7 | +3.80% | +0.96% | +4.20% | 86% |
+| top 5 winners removed | 2,153 | +0.92% | +0.72% | +0.18% | 51% |
+
+Across all 12 tune-positive cells: 5 keep positive out-of-sample excess over NIFTY at baseline; 0 still do at 3x slippage.
+
+**FINAL VERDICT: the edge dies** — killed by the slippage 3x row. The two numbers that decide it: the strategy's validation median of +0.95% per event against NIFTY's +0.73% over the identical windows. Whatever the grid found does not beat parking the same capital in the index once the required stresses are applied. The verdict is the system working: a strategy rejected before it cost anything.
+<!-- study_stress:end -->
