@@ -312,11 +312,20 @@ def run(dry_run=False, date=None, **kwargs):
         conn.close()
 
 
-def report(dry_run=False, **kwargs):
-    """--stage journal-report: is the live ledger behaving like the backtest?"""
+def report(dry_run=False, conn=None, **kwargs):
+    """--stage journal-report: is the live ledger behaving like the backtest?
+
+    `conn` is injectable so callers (tests above all) can point this at their own
+    database; without one it opens and owns the default. The stage ran against
+    output/nse.db unconditionally for months and the isolation hole stayed
+    invisible until the first real trade closed and an "empty ledger" test met a
+    ledger that was no longer empty.
+    """
     from src import rules_config, signals
 
-    conn = get_connection()
+    owns_conn = conn is None
+    if owns_conn:
+        conn = get_connection()
     try:
         init_db(conn)
         stats = summary(conn)
@@ -361,4 +370,5 @@ def report(dry_run=False, **kwargs):
         print()
         return {"summary": stats, "per_rule": live, "days": days}
     finally:
-        conn.close()
+        if owns_conn:
+            conn.close()
