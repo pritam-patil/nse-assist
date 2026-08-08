@@ -11,3 +11,6 @@ cache/
 # excluded directory, so a negation inside one never takes effect.
 output/*
 !output/nse.db
+
+# Derived from data/cache by data/events.py — regenerated in seconds, not committed.
+data/events.parquet
