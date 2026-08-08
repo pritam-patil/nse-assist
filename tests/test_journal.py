@@ -227,9 +227,13 @@ class LedgerTestCase(unittest.TestCase):
         self.assertAlmostEqual(row["pnl"], row["gross_pnl"] - row["costs"], places=2)
 
     def test_report_runs_on_an_empty_ledger(self):
-        """The current state: rules disabled, nothing pending. Must not divide by
-        zero on the way to saying so."""
-        result = journal.report()
+        """An empty ledger must not divide by zero on the way to saying so.
+
+        The connection is passed explicitly: without it report() opens the real
+        output/nse.db, and this test only passed while the production ledger
+        happened to be empty — it failed the morning the first live trade closed.
+        """
+        result = journal.report(conn=self.conn)
         self.assertEqual(result["summary"]["closed"], 0)
 
     def test_per_rule_live_groups_by_the_originating_rule(self):
