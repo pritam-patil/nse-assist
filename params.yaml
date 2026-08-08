@@ -24,6 +24,9 @@ frictions:
 
 tax:
   dividend_slab_pct: 31.2     # your marginal rate, e.g. 30
+  stcg_pct: 20                # equity delivery <1y, post-July-2024 rate. Prices
+                              # capital gains AND what a disallowed 94(7) loss
+                              # would have been worth as an offset.
   tds_threshold_inr: 10000    # per company per FY
   apply_section_94_7: true    # conservative default. 94(7): buy ≤3 months before
                               # record date AND sell ≤3 months after → capital loss
