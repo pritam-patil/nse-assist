@@ -14,3 +14,6 @@ output/*
 
 # Derived from data/cache by data/events.py — regenerated in seconds, not committed.
 data/events.parquet
+
+# Grid outputs from data/backtest.py — trade logs and summaries, regenerable.
+data/grid/
