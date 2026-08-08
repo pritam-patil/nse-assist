@@ -14,20 +14,24 @@ universe and the dividend record. It lives in its own directory with its own
 storage precisely so that experiments against it can never touch the pipeline's
 database or trip over its source-ranking rules. Nothing in src/ reads these files.
 
-ONE BASIS, AND WHICH COLUMN CAN LIE
+ONE BASIS, AND WHICH COLUMNS CAN LIE
 
-Bars are fetched with auto_adjust=False: open/high/low/close are raw traded
-prices, dividends and splits are their own event columns, adj_close is Yahoo's
-combined adjustment. Raw prices are append-stable — a new bar never rewrites an
-old one — which is what makes incremental refresh sound. adj_close is the
-exception: Yahoo rescales the entire history every time an event lands, so a
-cache appended across a new dividend would carry two silently incompatible
-adj_close bases either side of the seam. The refresh therefore watches newly
-fetched rows for events, and a symbol showing one it has not cached gets its full
-window refetched instead of appended. That costs a few full downloads per symbol
-per year and buys an adj_close column that is one basis end to end — the same
-seam src/backfill.py hunts with symbols_needing_readjustment(), prevented here
-instead of detected.
+Bars are fetched with auto_adjust=False. What that actually returns, verified
+against TATASTEEL's 2022 1:10 split: open/high/low/close AND volume arrive
+already split-adjusted to the current share basis (Yahoo restates the whole
+history at the source — the June 2022 closes read ~99 where the exchange printed
+~990), dividend amounts likewise, and adj_close differs from close only by
+dividend adjustment. NOT the exchange's raw prints — do not compare against
+bhavcopy without expecting split-factor gaps.
+
+The refresh consequence: prices are append-stable only until an event. A new
+split restates every close and volume before it; a new dividend restates every
+adj_close. Either way the history on disk just went stale, so the refresh
+watches newly fetched rows for events, and a symbol showing one it has not
+cached gets its full window refetched instead of appended. That costs a few
+full downloads per symbol per year and buys a cache that is one basis end to
+end — the seam src/backfill.py hunts with symbols_needing_readjustment(),
+prevented here instead of detected.
 
 THE LAST CACHED BAR IS ALWAYS REFETCHED
 
@@ -212,7 +216,7 @@ def _download(symbols, start, end=None):
                 start=start.isoformat(),
                 end=(end + timedelta(days=1)).isoformat() if end else None,
                 interval="1d",
-                auto_adjust=False,   # raw prices; adjustment stays in its own column
+                auto_adjust=False,   # split-adjusted at source; dividends stay out of close
                 actions=True,        # the dividend and split columns are the point
                 group_by="ticker",
                 progress=False,

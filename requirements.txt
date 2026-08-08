@@ -13,3 +13,7 @@ pandas
 # Parquet engine for the research cache in data/fetch.py — pandas needs one
 # installed before to_parquet/read_parquet work at all. Nothing in src/ uses it.
 pyarrow
+
+# params.yaml is the dividend backtester's config; data/events.py reads its
+# pinned validation events. Nothing in src/ parses YAML.
+pyyaml
