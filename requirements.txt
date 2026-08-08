@@ -9,3 +9,7 @@ yfinance
 # features.py is plain stdlib so it stays testable without a DataFrame in the way.
 # Already a transitive dependency of yfinance, pinned here because we import it.
 pandas
+
+# Parquet engine for the research cache in data/fetch.py — pandas needs one
+# installed before to_parquet/read_parquet work at all. Nothing in src/ uses it.
+pyarrow
