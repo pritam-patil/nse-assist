@@ -17,3 +17,7 @@ pyarrow
 # params.yaml is the dividend backtester's config; data/events.py reads its
 # pinned validation events. Nothing in src/ parses YAML.
 pyyaml
+
+# Study figures (data/study_exdate.py). Rendered headless to PNG; nothing in
+# src/ plots anything.
+matplotlib

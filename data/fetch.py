@@ -194,6 +194,12 @@ def merge(cached, fresh):
 # --- retrieval ----------------------------------------------------------------
 
 
+def ticker_for(symbol):
+    """Yahoo's ticker: NSE symbols carry the .NS suffix, index symbols (^NSEI)
+    are already Yahoo's own names and take nothing."""
+    return symbol if symbol.startswith("^") else universe.yahoo_ticker(symbol)
+
+
 def _download(symbols, start, end=None):
     """Tidied frames as {symbol: frame} for one batched yfinance call.
 
@@ -204,7 +210,7 @@ def _download(symbols, start, end=None):
     """
     import yfinance as yf
 
-    tickers = {universe.yahoo_ticker(s): s for s in symbols}
+    tickers = {ticker_for(s): s for s in symbols}
     frame = None
     last_error = None
     for attempt in range(MAX_RETRIES):
