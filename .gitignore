@@ -17,3 +17,6 @@ data/events.parquet
 
 # Grid outputs from data/backtest.py — trade logs and summaries, regenerable.
 data/grid/
+
+# Forward calendar snapshot from data/upcoming.py — refetched on demand.
+data/upcoming.parquet
