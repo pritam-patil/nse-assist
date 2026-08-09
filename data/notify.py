@@ -383,23 +383,10 @@ def _survivors():
 
 
 def _backtested_universe():
-    """The symbols the backtest ran on. From the price cache when present
-    (local runs), else the committed NIFTY 500 constituent list (a runner has
-    no cache), so a real member is never mislabeled 'outside the universe'
-    merely because this machine lacks the parquet files."""
-    cached = events.cached_symbols()
-    if cached:
-        return set(cached)
-    from data import fetch
-    committed = Path(__file__).resolve().parent / "ind_nifty500list.csv"
-    if committed.exists():
-        try:
-            return set(fetch._parse_nifty500(committed.read_text()))
-        except Exception as exc:
-            print(f"[notify] committed constituent list unparseable ({exc})")
-    print("[notify] no cache and no constituent list — the universe leg cannot "
-          "be checked; rows will read as out-of-universe")
-    return set()
+    """Thin wrapper — the fallback logic lives once, in events.py, because
+    upcoming.py needs the identical cache-or-committed-list behaviour to
+    filter the calendar table and must not grow its own copy. See there."""
+    return events.backtested_universe()
 
 
 def _notional():

@@ -16,7 +16,7 @@ from unittest import mock
 
 import pandas as pd
 
-from data import fetch, upcoming
+from data import events, fetch, upcoming
 
 
 class FakeResponse:
@@ -236,6 +236,53 @@ class FallbackTests(unittest.TestCase):
     def test_both_dead_is_a_loud_failure(self):
         dead = {"name": "x", "status": None, "error": "boom", "rows": None}
         self.assertEqual(self._run(dead, dict(dead, name="y")), 1)
+
+
+class BareRunnerRegressionTests(unittest.TestCase):
+    """The exact failure from the 2026-08-09 notify run: a bare GitHub
+    checkout has no price cache (data/cache/ is gitignored), so
+    events.cached_symbols() is []. run() used to filter against that raw
+    list, get an empty table for every fetch, and return 0 WITHOUT ever
+    writing OUT_PATH — silently. notify.py then found no calendar snapshot
+    and exited 1. This pins run() against a real, unmocked committed
+    constituent list — the actual fallback data a runner has — with an
+    empty cache, the actual runner condition."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._out = upcoming.OUT_PATH
+        self._cache = fetch.CACHE_DIR
+        upcoming.OUT_PATH = self.tmp / "upcoming.parquet"
+        fetch.CACHE_DIR = self.tmp / "cache"   # exists, but nothing written to it
+
+    def tearDown(self):
+        upcoming.OUT_PATH = self._out
+        fetch.CACHE_DIR = self._cache
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_real_universe_member_still_reaches_the_output_with_no_cache(self):
+        actions = {"name": "corporate-actions", "status": 200, "error": None,
+                  "rows": [{"symbol": "RELIANCE",
+                            "subject": "Dividend - Rs 4 Per Share",
+                            "exDate": "12-Aug-2026", "recDate": "12-Aug-2026"}]}
+        announcements = {"name": "announcements", "status": 200, "error": None,
+                         "rows": []}
+        with mock.patch.object(upcoming, "nse_session", return_value=None), \
+             mock.patch.object(upcoming, "fetch_corporate_actions",
+                               return_value=actions), \
+             mock.patch.object(upcoming, "fetch_announcements",
+                               return_value=announcements):
+            self.assertEqual(events.cached_symbols(), [])   # the runner shape
+            self.assertEqual(upcoming.run(), 0)
+        self.assertTrue(upcoming.OUT_PATH.exists(),
+                        "OUT_PATH must be written even with an empty price "
+                        "cache, or notify.py has nothing to read")
+        table = pd.read_parquet(upcoming.OUT_PATH)
+        self.assertEqual(list(table["symbol"]), ["RELIANCE"])
+        # No cache means no liquidity/yield context — that is a real,
+        # separate degradation (rows read "unknown"/unestimable downstream),
+        # not the crash this test guards against.
+        self.assertEqual(table.iloc[0]["liquidity"], "unknown")
 
 
 if __name__ == "__main__":

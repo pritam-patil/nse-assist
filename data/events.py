@@ -135,6 +135,34 @@ def cached_symbols():
     )
 
 
+def backtested_universe():
+    """The symbols the backtest actually ran on, cache-or-fallback.
+
+    From the price cache when present (any local run — the cache is how this
+    whole module works). A bare CI runner has no cache (data/cache/ is
+    gitignored, never checked out), so cached_symbols() there is always [];
+    without this fallback every symbol reads as "outside the backtested
+    universe" and every caller filtering on it silently sees nothing. The
+    fallback is the committed NIFTY 500 constituent list — present in every
+    checkout — so a real member is never mislabeled for lack of a parquet
+    file. This is what upcoming.py filters the calendar table against and
+    what notify.py's eligibility check uses; one function, so a runner-only
+    gap can only be fixed once.
+    """
+    cached = cached_symbols()
+    if cached:
+        return set(cached)
+    committed = Path(__file__).resolve().parent / "ind_nifty500list.csv"
+    if committed.exists():
+        try:
+            return set(fetch._parse_nifty500(committed.read_text()))
+        except Exception as exc:
+            print(f"[events] committed constituent list unparseable ({exc})")
+    print("[events] no cache and no constituent list — the universe cannot "
+          "be checked; every symbol will read as out-of-universe")
+    return set()
+
+
 def build_events(symbols=None):
     """The full event table, one row per (symbol, ex-date), oldest first."""
     rows = []
