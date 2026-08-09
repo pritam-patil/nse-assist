@@ -119,6 +119,46 @@ class SplitBasisTests(unittest.TestCase):
         self.assertAlmostEqual(row["avg_price_60d"], 95.9)
 
 
+class SpecialFlagTests(unittest.TestCase):
+    """The flag is point-in-time: only strictly-prior payouts and the ex-day
+    yield can fire it. Both cuts are strict inequalities."""
+
+    # Closes of 1,000 keep every yield here under 5%, so only the amount rule
+    # can fire — a 6-rupee payout on a 100-rupee close would test the yield
+    # rule by accident.
+
+    def test_a_payout_over_three_times_the_trailing_median_is_special(self):
+        frame = bars([("2024-01-05", 1000.0, 1000, 2.0, 0.0),
+                      ("2024-06-05", 1000.0, 1000, 2.0, 0.0),
+                      ("2025-01-05", 1000.0, 1000, 6.1, 0.0)])
+        flags = [row["special"] for row in events.events_for("X", frame)]
+        self.assertEqual(flags, [False, False, True])
+
+    def test_exactly_three_times_is_not_special(self):
+        frame = bars([("2024-01-05", 1000.0, 1000, 2.0, 0.0),
+                      ("2025-01-05", 1000.0, 1000, 6.0, 0.0)])
+        self.assertEqual([r["special"] for r in events.events_for("X", frame)],
+                         [False, False])
+
+    def test_a_later_windfall_does_not_relabel_an_earlier_payout(self):
+        frame = bars([("2024-01-05", 1000.0, 1000, 2.0, 0.0),
+                      ("2025-01-05", 1000.0, 1000, 50.0, 0.0)])
+        rows = events.events_for("X", frame)
+        self.assertFalse(rows[0]["special"])   # judged on ITS history: none
+        self.assertTrue(rows[1]["special"])
+
+    def test_a_first_event_can_only_be_flagged_by_yield(self):
+        frame = bars([("2024-01-04", 100.0, 1000, 0.0, 0.0),
+                      ("2024-01-05", 100.0, 1000, 5.5, 0.0)])
+        rows = events.events_for("X", frame)
+        self.assertTrue(rows[0]["special"])    # 5.5% yield, no history needed
+
+    def test_exactly_five_percent_yield_is_not_special(self):
+        frame = bars([("2024-01-04", 100.0, 1000, 0.0, 0.0),
+                      ("2024-01-05", 100.0, 1000, 5.0, 0.0)])
+        self.assertFalse(events.events_for("X", frame)[0]["special"])
+
+
 class BuildTests(CacheDirTestCase):
     def test_the_table_spans_symbols_sorted_by_date(self):
         fetch.write_cache("BBB", bars([("2026-08-01", 100.0, 1000, 0.0, 0.0),

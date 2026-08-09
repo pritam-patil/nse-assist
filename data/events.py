@@ -37,6 +37,7 @@ A miss fails the run loudly: if Yahoo is wrong about an event we can check, the
 """
 
 import argparse
+import statistics
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -60,7 +61,16 @@ AMOUNT_TOLERANCE = 0.005
 NEARBY_DAYS = 5
 
 COLUMNS = ("symbol", "ex_date", "amount", "prev_date", "prev_close", "ex_close",
-           "yield_pct", "avg_volume_60d", "avg_price_60d", "prior_sessions")
+           "yield_pct", "special", "avg_volume_60d", "avg_price_60d",
+           "prior_sessions")
+
+# A special dividend is one the symbol's own history did not lead you to
+# expect: more than SPECIAL_AMOUNT_MULTIPLE times the TRAILING median payout
+# (strictly prior events only — a later windfall must not relabel an earlier
+# ordinary payout), or an outright yield above SPECIAL_YIELD_PCT for the cases
+# with no usable history. Both cuts are strict inequalities.
+SPECIAL_YIELD_PCT = 5.0
+SPECIAL_AMOUNT_MULTIPLE = 3.0
 
 
 # --- extraction ---------------------------------------------------------------
@@ -79,10 +89,20 @@ def events_for(symbol, frame):
     """
     frame = frame.sort_values("date").reset_index(drop=True)
     rows = []
+    prior_amounts = []
     for position in frame.index[frame["dividend"] != 0]:
         amount = float(frame.at[position, "dividend"])
         prior = frame.iloc[max(0, position - PRIOR_SESSIONS):position]
         prev_close = float(prior["close"].iloc[-1]) if len(prior) else float("nan")
+        yield_pct = (amount / prev_close * 100
+                     if prev_close == prev_close else float("nan"))
+        # Trailing = events strictly before this one, so the flag is
+        # point-in-time: what you could have known on the ex-date, nothing later.
+        trailing = statistics.median(prior_amounts) if prior_amounts else None
+        special = bool(
+            (yield_pct == yield_pct and yield_pct > SPECIAL_YIELD_PCT)
+            or (trailing is not None
+                and amount > SPECIAL_AMOUNT_MULTIPLE * trailing))
         rows.append({
             "symbol": symbol,
             "ex_date": frame.at[position, "date"],
@@ -92,11 +112,13 @@ def events_for(symbol, frame):
             "prev_date": prior["date"].iloc[-1] if len(prior) else pd.NaT,
             "prev_close": prev_close,
             "ex_close": float(frame.at[position, "close"]),
-            "yield_pct": amount / prev_close * 100 if prev_close == prev_close else float("nan"),
+            "yield_pct": yield_pct,
+            "special": special,
             "avg_volume_60d": float(prior["volume"].mean()) if len(prior) else float("nan"),
             "avg_price_60d": float(prior["close"].mean()) if len(prior) else float("nan"),
             "prior_sessions": len(prior),
         })
+        prior_amounts.append(amount)
     return rows
 
 
