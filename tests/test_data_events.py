@@ -13,6 +13,7 @@ shape and asserts the numbers come out untouched.
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from datetime import date
 from pathlib import Path
 
@@ -177,6 +178,30 @@ class BuildTests(CacheDirTestCase):
         table = events.build_events()
         self.assertTrue(table.empty)
         self.assertEqual(tuple(table.columns), events.COLUMNS)
+
+
+class BacktestedUniverseTests(CacheDirTestCase):
+    """The gap that broke the notify workflow on a bare GitHub runner:
+    cached_symbols() there is always [] (data/cache/ is gitignored, never
+    checked out), and callers filtering on it directly saw an empty universe
+    — every real symbol read as 'outside the backtested universe'. See
+    data/upcoming.py's run() and data/notify.py's eligibility()."""
+
+    def test_the_cache_is_used_when_present(self):
+        fetch.write_cache("AAA", bars([("2026-08-01", 100.0, 1000, 1.0, 0.0)]))
+        self.assertEqual(events.backtested_universe(), {"AAA"})
+
+    def test_an_empty_cache_falls_back_to_the_committed_constituent_list(self):
+        # No cache written: the exact runner shape. A real NIFTY 500 member
+        # must still resolve as in-universe.
+        universe = events.backtested_universe()
+        self.assertGreater(len(universe), 400)
+        self.assertIn("RELIANCE", universe)
+
+    def test_an_unparseable_committed_list_degrades_to_empty_not_a_crash(self):
+        with mock.patch.object(events.fetch, "_parse_nifty500",
+                               side_effect=RuntimeError("bad csv")):
+            self.assertEqual(events.backtested_universe(), set())
 
 
 class ValidationTests(unittest.TestCase):

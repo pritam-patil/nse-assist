@@ -275,12 +275,18 @@ def run():
         print("[upcoming] both endpoints failed from this machine — nothing to show")
         return 1
 
-    universe = events.cached_symbols()
+    # backtested_universe(), not cached_symbols() directly: a bare runner has
+    # no cache (data/cache/ is gitignored), and cached_symbols() there is
+    # always [] — which used to make every row filter out, table.empty stay
+    # True, and this function return 0 WITHOUT ever writing OUT_PATH. notify.py
+    # then found no calendar snapshot and failed. backtested_universe() falls
+    # back to the committed constituent list precisely for this case.
+    universe = events.backtested_universe()
     context = cache_context({row["symbol"] for row in rows})
     table = build_table(rows, universe, context, liquidity_cutoffs(context))
     if table.empty:
         print(f"[upcoming] {len(rows)} dividend row(s) fetched, none in the "
-              f"cached universe — nothing forthcoming for our symbols")
+              f"backtested universe — nothing forthcoming for our symbols")
         return 0
 
     _print_table(table)
