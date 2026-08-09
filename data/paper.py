@@ -153,6 +153,34 @@ def log(today=None):
     return 0
 
 
+def record(cell, symbol, ex_date, expected, logged_at=None):
+    """Appends ONE signal to the ledger, deduplicated; returns True when new.
+
+    This is the hook notify.py calls at send time, so an alert and its paper
+    row are the same act — the two records cannot diverge because there is
+    only one write. `expected` carries median_return/p25/p75 frozen now.
+    """
+    entry, exit_after = cell
+    existing = read_signals()
+    key = (entry, symbol, pd.Timestamp(ex_date))
+    seen = {(row.entry_days_before, row.symbol, row.ex_date)
+            for row in existing.itertuples()}
+    if key in seen:
+        return False
+    row = pd.DataFrame([{
+        "logged_at": logged_at or _now(), "entry_days_before": entry,
+        "exit_days_after": exit_after, "symbol": symbol,
+        "ex_date": pd.Timestamp(ex_date),
+        "expected_median_return": expected["median_return"],
+        "expected_p25": expected["p25"], "expected_p75": expected["p75"],
+        "status": STATUS_PENDING, "entry_date": pd.NaT, "entry_close": None,
+        "exit_date": pd.NaT, "exit_close": None, "dividend": None,
+        "realized_net": None, "realized_return": None,
+    }])
+    write_signals(pd.concat([existing, row], ignore_index=True))
+    return True
+
+
 # --- fill ---------------------------------------------------------------------
 
 
