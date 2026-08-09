@@ -91,3 +91,39 @@ Across all 12 tune-positive cells: 5 keep positive out-of-sample excess over NIF
 
 **FINAL VERDICT: the edge dies** — killed by the slippage 3x row. The two numbers that decide it: the strategy's validation median of +0.95% per event against NIFTY's +0.73% over the identical windows. Whatever the grid found does not beat parking the same capital in the index once the required stresses are applied. The verdict is the system working: a strategy rejected before it cost anything.
 <!-- study_stress:end -->
+
+<!-- study_specials:start -->
+## Specials slice — retrofit on the stored grid (2026-08-09)
+
+Special = amount > 3x the symbol's trailing median payout, or yield > 5% (point-in-time, strict). 560 of 4,982 events flagged (11.2%): 78 by the yield rule, 482 by the amount rule. Flags joined onto the existing trade logs by symbol + ex-date; nothing re-simulated.
+
+**Sanity check FAILED**: 11.2% flagged is not a small minority. Eyeballing the amount-rule flags shows the failure mode — a trailing median lags a steadily growing payout, so a company that ~tripled its dividend over the window has its ordinary recent finals flagged for years (UltraCemco's regular 37/38/38/70/77.5 finals all carry the flag). The slice below is therefore closer to "dividend growers" than to special situations, and is reported as measurement only.
+
+Selected cell (e=20, x=0), out-of-sample, friction-adjusted:
+
+| slice | n | median net | win rate | median excess vs NIFTY |
+|---|---|---|---|---|
+| regular | 1,849 | +0.79% | 55% | -0.03% |
+| special | 309 | +2.08% | 62% | +1.14% |
+
+All surviving cells, special slice only (out-of-sample):
+
+| cell | special n | median net | median excess |
+|---|---|---|---|
+| e=10, x=0 | 309 | +1.05% | +0.61% |
+| e=10, x=1 | 305 | +1.23% | +0.35% |
+| e=15, x=0 | 309 | +1.72% | +0.77% |
+| e=15, x=1 | 305 | +1.33% | +0.84% |
+| e=15, x=3 | 304 | +2.05% | +0.89% |
+| e=15, x=5 | 303 | +1.90% | +0.98% |
+| e=15, x=10 | 295 | +2.02% | +0.89% |
+| e=20, x=0 | 309 | +2.08% | +1.14% |
+| e=20, x=1 | 305 | +1.86% | +0.97% |
+| e=20, x=3 | 304 | +1.98% | +1.22% |
+| e=20, x=5 | 303 | +2.20% | +1.29% |
+| e=20, x=10 | 295 | +2.31% | +0.92% |
+
+Slippage at 3x is approximated here by its lower bound (-0.40% of deployed, direct impact only) — the stored logs cannot re-price the compounding exactly, and the true cost is slightly worse.
+
+**The burst 5 verdict is unchanged**: the flag definition failed its own small-minority sanity check — the amount rule fires on ordinary dividend GROWTH (a trailing median lags a rising payout for years), so the flagged cohort is not what 'special' claims, and no verdict can change on a mislabeled slice. The specials slice stays what it was — a diagnostic worth a study of its own someday, not evidence against the verdict.
+<!-- study_specials:end -->
