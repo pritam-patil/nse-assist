@@ -103,19 +103,32 @@ class NormalizationTests(unittest.TestCase):
         self.assertEqual(row["amount"], 14.0)
         self.assertEqual(row["ex_date"], pd.Timestamp("2026-08-10"))
         self.assertEqual(row["record_date"], pd.Timestamp("2026-08-11"))
+        # Corporate-actions rows carry no seq_id — the seen-ledger falls back.
+        self.assertIsNone(row["seq_id"])
 
-    def test_declarations_keep_one_latest_row_per_symbol(self):
+    def test_declarations_keep_one_latest_row_per_symbol_with_seq_id(self):
         rows = upcoming.dividend_declarations([
             {"symbol": "A", "desc": "Dividend", "attchmntText": "dividend of Rs 5",
-             "an_dt": "08-Aug-2026 10:00:00"},
+             "an_dt": "08-Aug-2026 10:00:00", "seq_id": "111"},
             {"symbol": "A", "desc": "Record Date", "attchmntText": "dividend Rs 6",
-             "an_dt": "09-Aug-2026 12:00:00"},
+             "an_dt": "09-Aug-2026 12:00:00", "seq_id": "222"},
             {"symbol": "B", "desc": "Board Meeting", "attchmntText": "results"},
         ])
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["amount"], 6.0)
         self.assertIsNone(rows[0]["ex_date"])
         self.assertEqual(rows[0]["source"], "announcements")
+        # The latest filing's seq_id rides along as the seen-ledger key.
+        self.assertEqual(rows[0]["seq_id"], "222")
+
+    def test_seq_id_reaches_the_built_table(self):
+        rows = [{"symbol": "GOODCO", "ex_date": pd.Timestamp("2026-09-15"),
+                 "record_date": pd.NaT, "amount": 5.0, "seq_id": "999",
+                 "source": "announcements"}]
+        table = upcoming.build_table(rows, ["GOODCO"], {"GOODCO": (100.0, 5e7)},
+                                     (1e6, 1e7))
+        self.assertIn("seq_id", table.columns)
+        self.assertEqual(table.iloc[0]["seq_id"], "999")
 
 
 class TableTests(unittest.TestCase):
@@ -147,6 +160,31 @@ class TableTests(unittest.TestCase):
         table = upcoming.build_table(self.ROWS[:1], ["INUNIVERSE"], {}, (1e6, 1e7))
         self.assertEqual(table.iloc[0]["liquidity"], "unknown")
         self.assertTrue(pd.isna(table.iloc[0]["est_yield_pct"]))
+
+
+class AccessAssertionTests(unittest.TestCase):
+    """The runner network gate: check_access and the --assert-access exit code."""
+
+    def test_check_access_returns_the_announcements_outcome(self):
+        outcome = {"name": "announcements", "status": 200, "rows": [{"x": 1}],
+                   "error": None}
+        with mock.patch.object(upcoming, "fetch_announcements",
+                               return_value=outcome) as fetch, \
+             mock.patch.object(upcoming, "nse_session", return_value="session"):
+            self.assertIs(upcoming.check_access(), outcome)
+        fetch.assert_called_once_with("session")
+
+    def test_assert_access_exits_zero_when_reachable(self):
+        outcome = {"name": "announcements", "status": 200,
+                   "rows": [{"x": 1}], "error": None}
+        with mock.patch.object(upcoming, "check_access", return_value=outcome):
+            self.assertEqual(upcoming.main(["--assert-access"]), 0)
+
+    def test_assert_access_exits_nonzero_when_unreachable(self):
+        outcome = {"name": "announcements", "status": 200, "rows": None,
+                   "error": "empty body"}
+        with mock.patch.object(upcoming, "check_access", return_value=outcome):
+            self.assertEqual(upcoming.main(["--assert-access"]), 1)
 
 
 class FallbackTests(unittest.TestCase):

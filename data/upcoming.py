@@ -157,6 +157,9 @@ def dividend_actions(rows):
             "ex_date": parse_nse_date(row.get("exDate")),
             "record_date": parse_nse_date(row.get("recDate")),
             "amount": parse_amount(subject),
+            # Corporate-actions rows carry no seq_id; the seen-ledger falls back
+            # to symbol|ex-date for these. Only the announcements feed has one.
+            "seq_id": None,
             "source": "corporate-actions",
         })
     return out
@@ -176,7 +179,10 @@ def dividend_declarations(rows):
         if symbol and stamp >= latest.get(symbol, {}).get("_stamp", ""):
             latest[symbol] = {
                 "symbol": symbol, "ex_date": None, "record_date": None,
-                "amount": parse_amount(text), "source": "announcements",
+                "amount": parse_amount(text),
+                # NSE's own unique id for the filing — the natural key for the
+                # seen-ledger, so a second daily run surfaces only new filings.
+                "seq_id": row.get("seq_id"), "source": "announcements",
                 "_stamp": stamp,
             }
     return [{k: v for k, v in row.items() if k != "_stamp"}
@@ -226,7 +232,7 @@ def build_table(rows, universe, context, cutoffs):
         kept.append({**row, "est_yield_pct": est_yield, "liquidity": liquidity})
     frame = pd.DataFrame(kept, columns=["symbol", "ex_date", "record_date",
                                         "amount", "est_yield_pct", "liquidity",
-                                        "source"])
+                                        "seq_id", "source"])
     return frame.sort_values(["ex_date", "symbol"],
                              na_position="last").reset_index(drop=True)
 
@@ -284,8 +290,35 @@ def run():
     return 0
 
 
+def check_access(session=None):
+    """Probe the announcements endpoint and return its outcome dict.
+
+    This is the per-endpoint gate the notify workflow runs FIRST. A GitHub
+    runner is an untested network — the Workers spike showed cloud egress gets
+    empty bodies where a residential connection gets data — so access is
+    asserted, never assumed. announcements is the probe target because it is
+    the same host and cookie dance as corporate-actions; if it answers, the
+    calendar fetch will too.
+    """
+    return fetch_announcements(session or nse_session())
+
+
 def main(argv=None):
-    argparse.ArgumentParser(description=__doc__.splitlines()[0]).parse_args(argv)
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--assert-access", action="store_true",
+        help="probe the announcements endpoint and exit 0 (reachable) or 1 "
+             "(not) — the runner network gate; fetches nothing else")
+    args = parser.parse_args(argv)
+    if args.assert_access:
+        outcome = check_access()
+        if outcome["rows"] is None:
+            print(f"[upcoming] NSE announcements UNREACHABLE from here: "
+                  f"HTTP {outcome['status']} — {outcome['error']}")
+            return 1
+        print(f"[upcoming] NSE announcements reachable: "
+              f"{len(outcome['rows'])} row(s)")
+        return 0
     return run()
 
 

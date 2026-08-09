@@ -20,3 +20,7 @@ data/grid/
 
 # Forward calendar snapshot from data/upcoming.py — refetched on demand.
 data/upcoming.parquet
+
+# data/notify_state.json is NOT ignored: it is the seq_id seen-ledger, the
+# last-digest date and the daily alert counter, committed back by the notify
+# workflow so the two daily runs on ephemeral runners share one memory.

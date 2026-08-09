@@ -1,0 +1,147 @@
+name: notify
+
+# Dividend digest + signal alerts for the research side, twice daily.
+#
+# CRONS ARE UTC (see evening.yml for the full rant). Both times stated in IST:
+#   0 13  * * *   -> 13:00 UTC == 18:30 IST   post-market — the DIGEST run
+#   30 17 * * *   -> 17:30 UTC == 23:00 IST   late-filings catch-up
+#
+# THE SECOND TIME IS THE PARAMETER. GitHub Actions requires a literal cron (a
+# schedule cannot read a repo variable), so "parameter" here means: change the
+# ONE line below, nowhere else. The documented pre-market alternative is
+#   30 1  * * *   -> 01:30 UTC == 07:00 IST   before the open, for a morning read
+# Swap the second `- cron:` line to that and nothing else moves.
+#
+# Daily, not weekday-gated: dividend declarations are not tied to the trading
+# calendar, and the digest self-suppresses when nothing is new, so a quiet
+# weekend run sends nothing and costs a runner-minute.
+
+on:
+  schedule:
+    - cron: "0 13 * * *"     # 18:30 IST — digest
+    # SECOND RUN — the parameter. 17:30 UTC == 23:00 IST (late filings).
+    # Pre-market alternative (documented): "30 1 * * *" == 07:00 IST.
+    - cron: "30 17 * * *"
+  workflow_dispatch:
+
+# Shared with evening/morning/sunday/poll. Every one of those commits to main,
+# and this one commits data/notify_state.json and data/paper/. A shared group
+# serialises the pushes so none races another's `git pull --rebase; git push`
+# (there is no retry loop around that push). cancel-in-progress stays false: a
+# cancelled run can lose an alert it sent but did not yet record in the paper
+# ledger, which would break the one-write invariant the alert path depends on.
+# The cost is latency — this can queue behind a 30-minute evening bhavcopy wait
+# — and a post-market digest can absorb that.
+concurrency:
+  group: nse-assist-state
+  cancel-in-progress: false
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    environment: prod
+    # Both credential pairs are mapped. notify.py prefers NOTIFY_* (a dedicated
+    # research bot) and falls back to the pipeline bot, so the NOTIFY_* secrets
+    # may be undefined — they then arrive blank and the fallback is used. The
+    # guard below tests the RESOLVED pair for emptiness rather than trusting the
+    # mapping, because a referenced-but-undefined secret is an empty string, not
+    # an error.
+    env:
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      NOTIFY_TELEGRAM_BOT_TOKEN: ${{ secrets.NOTIFY_TELEGRAM_BOT_TOKEN }}
+      NOTIFY_TELEGRAM_CHAT_ID: ${{ secrets.NOTIFY_TELEGRAM_CHAT_ID }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements.txt
+
+      - name: Check the notify credentials resolve
+        run: |
+          BOT="${NOTIFY_TELEGRAM_BOT_TOKEN:-$TELEGRAM_BOT_TOKEN}"
+          CHAT="${NOTIFY_TELEGRAM_CHAT_ID:-$TELEGRAM_CHAT_ID}"
+          missing=""
+          [ -n "$BOT" ]  || missing="$missing bot-token"
+          [ -n "$CHAT" ] || missing="$missing chat-id"
+          if [ -n "$missing" ]; then
+            echo "::error::no usable Telegram credentials:$missing (neither NOTIFY_* nor the pipeline fallback is populated)"
+            exit 1
+          fi
+
+      # STEP 1 OF THE ACTUAL WORK: assert this runner can reach NSE.
+      #
+      # A GitHub runner is an untested network. The Workers spike showed cloud
+      # egress gets empty bodies where a residential connection gets data —
+      # gating is PER-ENDPOINT because "the internet works" says nothing about
+      # whether NSE answers THIS host. If it does not, warn on Telegram (never
+      # fail silently — a notifier that goes quiet is indistinguishable from a
+      # quiet market) and exit nonzero so the run is visibly red.
+      - name: Assert NSE access from this runner (per-endpoint gate)
+        run: |
+          if python -m data.upcoming --assert-access; then
+            echo "NSE announcements reachable from this runner"
+          else
+            echo "::error::NSE announcements unreachable from this GitHub runner"
+            BOT="${NOTIFY_TELEGRAM_BOT_TOKEN:-$TELEGRAM_BOT_TOKEN}"
+            CHAT="${NOTIFY_TELEGRAM_CHAT_ID:-$TELEGRAM_CHAT_ID}"
+            curl -sS --max-time 20 \
+              "https://api.telegram.org/bot${BOT}/sendMessage" \
+              -d "chat_id=${CHAT}" \
+              --data-urlencode "text=nse-assist notify: NSE announcements are UNREACHABLE from the GitHub runner.
+          ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          No digest or alerts this run. If this persists, GitHub egress is blocked — fall back to the laptop-cron path (docs/notifications.md)." > /dev/null
+            exit 1
+          fi
+
+      - name: Refresh the forthcoming-dividends calendar
+        run: python -m data.upcoming
+
+      # ALERTS BEFORE DIGEST, deliberately. An urgent eligible filing is surfaced
+      # once — an alert if time-critical, a digest line otherwise. Alerts run
+      # first and mark the filing seen, so the digest lists only the rest, and
+      # the second daily run alerts only filings the first did not see. Alerts is
+      # a no-op today (no cell survives burst 7) and says so.
+      - name: Signal alerts (urgent, paper-logged at send time)
+        run: python -m data.notify alerts
+
+      - name: Daily digest (one per day, self-suppresses when nothing is new)
+        run: python -m data.notify digest
+
+      - name: Commit the notification state and paper ledger
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          # Both are state that must survive to the next run: notify_state.json is
+          # the seq_id seen-ledger + daily counter, data/paper/ is the ledger the
+          # one-write invariant depends on. Tolerant of absence — the state file
+          # does not exist until the first digest writes it.
+          [ -f data/notify_state.json ] && git add data/notify_state.json || true
+          git add data/paper/ 2>/dev/null || true
+          if git diff --quiet --cached; then
+            echo "no notification state to record"
+            exit 0
+          fi
+          git commit -m "notify: $(date -u +%Y-%m-%dT%H:%MZ)"
+          # Commit BEFORE pulling: --rebase refuses a dirty tree, and the steps
+          # above wrote the files this step commits.
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
+
+      - name: Alert on failure
+        if: failure()
+        run: |
+          BOT="${NOTIFY_TELEGRAM_BOT_TOKEN:-$TELEGRAM_BOT_TOKEN}"
+          CHAT="${NOTIFY_TELEGRAM_CHAT_ID:-$TELEGRAM_CHAT_ID}"
+          curl -sS --max-time 20 \
+            "https://api.telegram.org/bot${BOT}/sendMessage" \
+            -d "chat_id=${CHAT}" \
+            --data-urlencode "text=nse-assist notify run FAILED.
+          ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          The digest or alerts did not go out. Check the run; the laptop-cron path in docs/notifications.md is the backup." > /dev/null
