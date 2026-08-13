@@ -62,6 +62,63 @@ checkout each run — without persistence the 23:00 run would forget the 18:30 o
 and the daily cap would reset. The seen-ledger keyed by seq_id is what makes the
 second run surface only unseen filings.
 
+## Liquidity snapshot — the runner's stand-in for the price cache
+
+`data/cache/` (ten years of price history, ~47MB) is gitignored — too large to
+commit, and `data.fetch` regenerates it in minutes. `data/grid/` (the backtest
+trade logs) IS committed, so a runner has the trades. But computing whether
+any of them beat NIFTY needs the index's own closes too — `data/grid/` alone
+was not enough; `notify._survivors()` still fell back to its empty answer on
+a bare runner until `data/nifty_snapshot.py` (below) closed that second gap.
+Separately, the digest's yield estimates and liquidity flags need a
+**current close** and **recent turnover** per symbol — neither the grid nor
+the NIFTY snapshot carries either.
+
+`data/liquidity_snapshot.csv` closes that last gap: a few KB, one row per
+symbol, just the latest close and 60-session average turnover. Committed, so
+a runner without the full cache still gets real (if slightly stale) numbers
+instead of "unknown" on every row. Refresh it locally, periodically — weekly
+is plenty, since a yield estimate only breaks if the price moved enough to
+cross a bucket boundary in the meantime:
+
+```bash
+python -m data.liquidity_snapshot   # needs the local price cache — run data.fetch first if stale
+git add data/liquidity_snapshot.csv
+git commit -m "data: refresh liquidity snapshot"
+```
+
+`cache_context()` in `upcoming.py` always prefers the live cache when present
+and only falls back to the snapshot for symbols it can't answer — on a bare
+runner, that's every symbol. The digest logs how many rows it recovered this
+way and the snapshot's as-of date, so a stale number is visible, not silent.
+
+## NIFTY snapshot — what `data/grid/` alone didn't cover
+
+`data/grid/`'s trades need an index close to be compared against — that's
+how "beats NIFTY" is computed at all — and a bare runner has none of the
+index's own price history locally either. `data/nifty_snapshot.csv` is the
+same idea as the liquidity snapshot, scaled down further: just `date, close`
+for NIFTY, ~64KB, refreshed and recommitted the same way:
+
+```bash
+python -m data.nifty_snapshot
+git add data/nifty_snapshot.csv
+git commit -m "data: refresh NIFTY snapshot"
+```
+
+**The one coupling that actually matters here**: this snapshot and
+`data/grid/` must cover the same date range. If the backtest is ever rerun
+with a wider window and this snapshot is NOT refreshed in the same commit,
+nothing errors — `with_nifty()` just silently drops any trade it can't pair
+against a close, so a runner would compute a verdict from an incomplete
+slice of the new grid rather than fail loudly. **Whenever the backtest is
+rerun, that's two commits together: the new `data/grid/` AND a refreshed
+`data/nifty_snapshot.csv`.**
+
+`study_exdate.nifty_closes()` tries the live cache first (so a local run is
+always current), falls back to this snapshot when the live cache is empty,
+and only raises when neither source has anything at all.
+
 ## `make notify` — the manual / local path
 
 ```bash
@@ -97,8 +154,10 @@ Notes:
   disable the workflow (comment out its `schedule`).
 - `CRON_TZ` needs a cron that supports it (Linux/vixie-cron, and macOS via
   launchd is cleaner — a `launchd` plist is the mac-native equivalent).
-- The laptop path has the price cache and the grid locally, so its digest can
-  compute yields and (if any ever exist) survivors, which a bare runner cannot.
+- The laptop path has the live price cache, so its yield/liquidity numbers are
+  always current; a runner falls back to the committed snapshot above, which
+  is only as fresh as the last local refresh. Survivors are computed from the
+  committed grid either way — both paths agree on model scope.
 
 ## What this does NOT do
 

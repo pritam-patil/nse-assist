@@ -84,8 +84,12 @@ def nifty_closes(refresh=True):
     """{Timestamp: close} for NIFTY, warmed through the ordinary cache machinery.
 
     A refresh failure degrades to the cached copy with a note — the study is
-    re-runnable offline — but a missing cache is fatal: without the index there
-    is no market adjustment, and an unadjusted study would be a different study.
+    re-runnable offline. A missing LIVE cache (a bare CI runner: data/cache/
+    is never checked out there) falls back to the committed snapshot in
+    data/nifty_snapshot.py before giving up — see that module for what it is
+    and the coupling it has to data/grid/. Only when NEITHER source has
+    anything is this fatal: without the index there is no market adjustment,
+    and an unadjusted study would be a different study.
     """
     if refresh:
         try:
@@ -93,11 +97,20 @@ def nifty_closes(refresh=True):
         except Exception as exc:
             print(f"[study] NIFTY refresh failed ({exc}); using the cached series")
     frame = fetch.read_cache(NIFTY_SYMBOL)
-    if frame is None or frame.empty:
-        raise RuntimeError(
-            f"no NIFTY history cached — run `python -m data.fetch --symbols "
-            f"{NIFTY_SYMBOL}` once, or drop --no-refresh")
-    return dict(zip(frame["date"], frame["close"]))
+    if frame is not None and not frame.empty:
+        return dict(zip(frame["date"], frame["close"]))
+
+    from data import nifty_snapshot
+    closes = nifty_snapshot.snapshot_closes()
+    if closes:
+        print(f"[study] no live NIFTY cache — using the committed snapshot "
+              f"({len(closes)} session(s); refresh it if the grid was "
+              f"regenerated more recently, see docs/notifications.md)")
+        return closes
+
+    raise RuntimeError(
+        f"no NIFTY history cached and no committed snapshot — run "
+        f"`python -m data.fetch --symbols {NIFTY_SYMBOL}` once, or drop --no-refresh")
 
 
 def load_events():
