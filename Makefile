@@ -6,7 +6,7 @@
 #   make notify PYTHON=venv/bin/python
 PYTHON ?= python
 
-.PHONY: help notify notify-dry notify-check test
+.PHONY: help notify notify-dry notify-check refresh-snapshot test
 
 help:  ## List targets
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
@@ -26,6 +26,9 @@ notify-dry:  ## Same as `notify` but print the messages instead of sending
 	$(PYTHON) -m data.upcoming
 	$(PYTHON) -m data.notify alerts --dry-run
 	$(PYTHON) -m data.notify digest --dry-run
+
+refresh-snapshot:  ## Rebuild data/liquidity_snapshot.csv from the local price cache, then commit it
+	$(PYTHON) -m data.liquidity_snapshot
 
 test:  ## Run the full test suite
 	$(PYTHON) -m unittest discover -s tests

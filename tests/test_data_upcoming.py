@@ -16,7 +16,7 @@ from unittest import mock
 
 import pandas as pd
 
-from data import events, fetch, upcoming
+from data import events, fetch, liquidity_snapshot as liquidity, upcoming
 
 
 class FakeResponse:
@@ -162,6 +162,61 @@ class TableTests(unittest.TestCase):
         self.assertTrue(pd.isna(table.iloc[0]["est_yield_pct"]))
 
 
+class CacheContextTests(unittest.TestCase):
+    """cache_context()'s two-tier lookup: live cache first, the committed
+    liquidity snapshot for whatever the live cache can't answer — the bare
+    CI runner's entire liquidity/yield picture depends on this fallback."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._cache = fetch.CACHE_DIR
+        self._snapshot = liquidity.SNAPSHOT_PATH
+        fetch.CACHE_DIR = self.tmp / "cache"
+        liquidity.SNAPSHOT_PATH = self.tmp / "snapshot.csv"
+
+    def tearDown(self):
+        fetch.CACHE_DIR = self._cache
+        liquidity.SNAPSHOT_PATH = self._snapshot
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _cache_frame(self, close):
+        return pd.DataFrame({
+            "date": pd.to_datetime(["2026-08-01"]), "open": [close],
+            "high": [close], "low": [close], "close": [close],
+            "adj_close": [close], "volume": [1000], "dividend": [0.0],
+            "split": [0.0],
+        })
+
+    def test_the_live_cache_wins_when_present(self):
+        fetch.write_cache("HAVE", self._cache_frame(50.0))
+        liquidity.write_snapshot(pd.DataFrame(
+            {"symbol": ["HAVE"], "asof_date": ["2026-01-01"],
+             "close": [999.0], "avg_turnover_60d": [1.0]}))
+        context = upcoming.cache_context(["HAVE"])
+        self.assertEqual(context["HAVE"][0], 50.0)   # live, not the snapshot
+
+    def test_the_snapshot_recovers_a_symbol_the_live_cache_lacks(self):
+        liquidity.write_snapshot(pd.DataFrame(
+            {"symbol": ["SNAPONLY"], "asof_date": ["2026-01-01"],
+             "close": [75.0], "avg_turnover_60d": [2e6]}))
+        context = upcoming.cache_context(["SNAPONLY"])
+        self.assertEqual(context["SNAPONLY"], (75.0, 2e6))
+
+    def test_a_symbol_in_neither_source_is_simply_absent(self):
+        context = upcoming.cache_context(["NOWHERE"])
+        self.assertNotIn("NOWHERE", context)
+
+    def test_a_bare_runner_shape_recovers_every_symbol_from_the_snapshot(self):
+        # No live cache at all — the exact CI condition — and the snapshot
+        # covers everything asked for.
+        liquidity.write_snapshot(pd.DataFrame({
+            "symbol": ["A", "B"], "asof_date": ["2026-01-01", "2026-01-01"],
+            "close": [10.0, 20.0], "avg_turnover_60d": [1e6, 2e6],
+        }))
+        context = upcoming.cache_context(["A", "B"])
+        self.assertEqual(set(context), {"A", "B"})
+
+
 class AccessAssertionTests(unittest.TestCase):
     """The runner network gate: check_access and the --assert-access exit code."""
 
@@ -252,21 +307,23 @@ class BareRunnerRegressionTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self._out = upcoming.OUT_PATH
         self._cache = fetch.CACHE_DIR
+        self._snapshot = liquidity.SNAPSHOT_PATH
         upcoming.OUT_PATH = self.tmp / "upcoming.parquet"
         fetch.CACHE_DIR = self.tmp / "cache"   # exists, but nothing written to it
+        # Isolated from the real committed data/liquidity_snapshot.csv by
+        # default — this class reproduces "no price data anywhere" unless a
+        # test explicitly restores the real path (see below).
+        liquidity.SNAPSHOT_PATH = self.tmp / "no_such_snapshot.csv"
 
     def tearDown(self):
         upcoming.OUT_PATH = self._out
         fetch.CACHE_DIR = self._cache
+        liquidity.SNAPSHOT_PATH = self._snapshot
         shutil.rmtree(self.tmp, ignore_errors=True)
 
-    def test_a_real_universe_member_still_reaches_the_output_with_no_cache(self):
-        actions = {"name": "corporate-actions", "status": 200, "error": None,
-                  "rows": [{"symbol": "RELIANCE",
-                            "subject": "Dividend - Rs 4 Per Share",
-                            "exDate": "12-Aug-2026", "recDate": "12-Aug-2026"}]}
-        announcements = {"name": "announcements", "status": 200, "error": None,
-                         "rows": []}
+    def _run_with(self, actions, announcements=None):
+        announcements = announcements or {"name": "announcements", "status": 200,
+                                          "error": None, "rows": []}
         with mock.patch.object(upcoming, "nse_session", return_value=None), \
              mock.patch.object(upcoming, "fetch_corporate_actions",
                                return_value=actions), \
@@ -277,12 +334,32 @@ class BareRunnerRegressionTests(unittest.TestCase):
         self.assertTrue(upcoming.OUT_PATH.exists(),
                         "OUT_PATH must be written even with an empty price "
                         "cache, or notify.py has nothing to read")
-        table = pd.read_parquet(upcoming.OUT_PATH)
+        return pd.read_parquet(upcoming.OUT_PATH)
+
+    def test_a_real_universe_member_still_reaches_the_output_with_no_cache(self):
+        actions = {"name": "corporate-actions", "status": 200, "error": None,
+                  "rows": [{"symbol": "RELIANCE",
+                            "subject": "Dividend - Rs 4 Per Share",
+                            "exDate": "12-Aug-2026", "recDate": "12-Aug-2026"}]}
+        table = self._run_with(actions)
         self.assertEqual(list(table["symbol"]), ["RELIANCE"])
-        # No cache means no liquidity/yield context — that is a real,
-        # separate degradation (rows read "unknown"/unestimable downstream),
-        # not the crash this test guards against.
+        # No cache AND no snapshot (isolated in setUp) means no liquidity/
+        # yield context at all — that is a real, separate degradation (rows
+        # read "unknown"/unestimable downstream), not the crash this test
+        # guards against.
         self.assertEqual(table.iloc[0]["liquidity"], "unknown")
+
+    def test_the_committed_snapshot_supplies_real_liquidity_on_the_same_shape(self):
+        # This is what an actual bare runner sees today: no price cache, but
+        # the real committed data/liquidity_snapshot.csv checked out.
+        liquidity.SNAPSHOT_PATH = self._snapshot   # the real, committed file
+        actions = {"name": "corporate-actions", "status": 200, "error": None,
+                  "rows": [{"symbol": "RELIANCE",
+                            "subject": "Dividend - Rs 4 Per Share",
+                            "exDate": "12-Aug-2026", "recDate": "12-Aug-2026"}]}
+        table = self._run_with(actions)
+        self.assertNotEqual(table.iloc[0]["liquidity"], "unknown")
+        self.assertTrue(pd.notna(table.iloc[0]["est_yield_pct"]))
 
 
 if __name__ == "__main__":

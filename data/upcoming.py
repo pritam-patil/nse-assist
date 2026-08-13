@@ -194,15 +194,39 @@ def dividend_declarations(rows):
 
 def cache_context(symbols):
     """{symbol: (latest close, 60-session avg turnover)} for yield estimates
-    and liquidity flags. Reads only symbols the table needs."""
-    context = {}
+    and liquidity flags. Reads only symbols the table needs.
+
+    The live cache first, always — it is more current whenever it exists. Any
+    symbol it can't answer (a bare CI runner: ALL of them, since data/cache/
+    is never checked out there) falls back to the committed liquidity
+    snapshot, which is a real-but-older stand-in for exactly these two
+    numbers. See data/liquidity_snapshot.py for what it is and why.
+    """
+    context, missing = {}, []
     for symbol in symbols:
         frame = fetch.read_cache(symbol)
         if frame is None or frame.empty:
+            missing.append(symbol)
             continue
         tail = frame.sort_values("date").tail(LIQUIDITY_SESSIONS)
         context[symbol] = (float(tail["close"].iloc[-1]),
                           float((tail["close"] * tail["volume"]).mean()))
+
+    if missing:
+        from data import liquidity_snapshot
+        snapshot, asof = liquidity_snapshot.snapshot_context()
+        recovered = [s for s in missing if s in snapshot]
+        context.update({s: snapshot[s] for s in recovered})
+        if recovered:
+            print(f"[upcoming] {len(recovered)} symbol(s) recovered from the "
+                  f"committed liquidity snapshot (as of "
+                  f"{asof.date() if asof is not None else '?'} — "
+                  f"stale relative to today, flagged rather than hidden)")
+        still_missing = len(missing) - len(recovered)
+        if still_missing:
+            print(f"[upcoming] {still_missing} symbol(s) have no price data "
+                  f"anywhere (live cache or snapshot) — yield/liquidity stay "
+                  f"unestimable for them")
     return context
 
 
