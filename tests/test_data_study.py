@@ -15,7 +15,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from data import events, fetch, study_exdate as study
+from unittest import mock
+
+from data import events, fetch, nifty_snapshot, study_exdate as study
 
 
 def event_table(rows):
@@ -167,6 +169,53 @@ class CachedSymbolTests(unittest.TestCase):
         finally:
             fetch.CACHE_DIR = original
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class NiftyClosesFallbackTests(unittest.TestCase):
+    """The gap a committed data/grid/ alone did not close: notify._survivors()
+    also needs NIFTY closes to pair every trade against, and a bare runner has
+    no live cache for them either. See data/nifty_snapshot.py."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._cache = fetch.CACHE_DIR
+        self._snapshot = nifty_snapshot.SNAPSHOT_PATH
+        fetch.CACHE_DIR = self.tmp / "cache"
+        nifty_snapshot.SNAPSHOT_PATH = self.tmp / "nifty.csv"
+
+    def tearDown(self):
+        fetch.CACHE_DIR = self._cache
+        nifty_snapshot.SNAPSHOT_PATH = self._snapshot
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_the_live_cache_is_used_when_present_even_with_a_snapshot(self):
+        fetch.write_cache(study.NIFTY_SYMBOL, pd.DataFrame({
+            "date": pd.to_datetime(["2026-08-01"]), "open": [1.0], "high": [1.0],
+            "low": [1.0], "close": [50.0], "adj_close": [1.0], "volume": [1],
+            "dividend": [0.0], "split": [0.0]}))
+        nifty_snapshot.write_snapshot(pd.DataFrame(
+            {"date": ["2026-08-01"], "close": [999.0]}))
+        closes = study.nifty_closes(refresh=False)
+        self.assertEqual(closes[pd.Timestamp("2026-08-01")], 50.0)   # live, not the snapshot
+
+    def test_no_live_cache_falls_back_to_the_committed_snapshot(self):
+        nifty_snapshot.write_snapshot(pd.DataFrame(
+            {"date": ["2026-08-01"], "close": [75.0]}))
+        closes = study.nifty_closes(refresh=False)
+        self.assertEqual(closes[pd.Timestamp("2026-08-01")], 75.0)
+
+    def test_neither_source_available_still_raises(self):
+        with self.assertRaises(RuntimeError) as caught:
+            study.nifty_closes(refresh=False)
+        self.assertIn("no committed snapshot", str(caught.exception))
+
+    def test_a_refresh_failure_still_tries_the_snapshot_before_giving_up(self):
+        nifty_snapshot.write_snapshot(pd.DataFrame(
+            {"date": ["2026-08-01"], "close": [42.0]}))
+        with mock.patch.object(study.fetch, "refresh",
+                               side_effect=RuntimeError("network down")):
+            closes = study.nifty_closes(refresh=True)
+        self.assertEqual(closes[pd.Timestamp("2026-08-01")], 42.0)
 
 
 if __name__ == "__main__":

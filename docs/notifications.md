@@ -66,9 +66,13 @@ second run surface only unseen filings.
 
 `data/cache/` (ten years of price history, ~47MB) is gitignored — too large to
 commit, and `data.fetch` regenerates it in minutes. `data/grid/` (the backtest
-trade logs) IS committed, so a runner can compute real survivors. But the
-digest's yield estimates and liquidity flags need a **current close** and
-**recent turnover** per symbol — the grid alone doesn't carry either.
+trade logs) IS committed, so a runner has the trades. But computing whether
+any of them beat NIFTY needs the index's own closes too — `data/grid/` alone
+was not enough; `notify._survivors()` still fell back to its empty answer on
+a bare runner until `data/nifty_snapshot.py` (below) closed that second gap.
+Separately, the digest's yield estimates and liquidity flags need a
+**current close** and **recent turnover** per symbol — neither the grid nor
+the NIFTY snapshot carries either.
 
 `data/liquidity_snapshot.csv` closes that last gap: a few KB, one row per
 symbol, just the latest close and 60-session average turnover. Committed, so
@@ -87,6 +91,33 @@ git commit -m "data: refresh liquidity snapshot"
 and only falls back to the snapshot for symbols it can't answer — on a bare
 runner, that's every symbol. The digest logs how many rows it recovered this
 way and the snapshot's as-of date, so a stale number is visible, not silent.
+
+## NIFTY snapshot — what `data/grid/` alone didn't cover
+
+`data/grid/`'s trades need an index close to be compared against — that's
+how "beats NIFTY" is computed at all — and a bare runner has none of the
+index's own price history locally either. `data/nifty_snapshot.csv` is the
+same idea as the liquidity snapshot, scaled down further: just `date, close`
+for NIFTY, ~64KB, refreshed and recommitted the same way:
+
+```bash
+python -m data.nifty_snapshot
+git add data/nifty_snapshot.csv
+git commit -m "data: refresh NIFTY snapshot"
+```
+
+**The one coupling that actually matters here**: this snapshot and
+`data/grid/` must cover the same date range. If the backtest is ever rerun
+with a wider window and this snapshot is NOT refreshed in the same commit,
+nothing errors — `with_nifty()` just silently drops any trade it can't pair
+against a close, so a runner would compute a verdict from an incomplete
+slice of the new grid rather than fail loudly. **Whenever the backtest is
+rerun, that's two commits together: the new `data/grid/` AND a refreshed
+`data/nifty_snapshot.csv`.**
+
+`study_exdate.nifty_closes()` tries the live cache first (so a local run is
+always current), falls back to this snapshot when the live cache is empty,
+and only raises when neither source has anything at all.
 
 ## `make notify` — the manual / local path
 
