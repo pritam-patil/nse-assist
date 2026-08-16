@@ -106,18 +106,43 @@ git add data/nifty_snapshot.csv
 git commit -m "data: refresh NIFTY snapshot"
 ```
 
-**The one coupling that actually matters here**: this snapshot and
-`data/grid/` must cover the same date range. If the backtest is ever rerun
-with a wider window and this snapshot is NOT refreshed in the same commit,
-nothing errors — `with_nifty()` just silently drops any trade it can't pair
-against a close, so a runner would compute a verdict from an incomplete
-slice of the new grid rather than fail loudly. **Whenever the backtest is
-rerun, that's two commits together: the new `data/grid/` AND a refreshed
-`data/nifty_snapshot.csv`.**
+**The coupling that actually matters here** spans THREE files, not two:
+`data/grid/`, `data/nifty_snapshot.csv`, and `data/events.parquet` (below) —
+all three must move together whenever the backtest is rerun. `with_nifty()`
+degrades quietly if the NIFTY snapshot falls behind (it drops unpaired
+trades rather than erroring), so a stale one costs silent under-coverage,
+not a crash.
 
 `study_exdate.nifty_closes()` tries the live cache first (so a local run is
 always current), falls back to this snapshot when the live cache is empty,
 and only raises when neither source has anything at all.
+
+## `data/events.parquet` — the third file, found from real logs, not review
+
+`data/grid/`'s raw trade rows (symbol, dates, prices) are not enough on their
+own: `study_grid.with_context()` — the step that joins in `yield_pct` and
+`avg_volume_60d`/`avg_price_60d` to derive liquidity — reads
+`data/events.parquet` directly. Committing `data/grid/` and
+`data/nifty_snapshot.csv` closed two gaps but left this one; on a bare
+runner `_survivors()` kept failing with a plain `FileNotFoundError` and
+degrading to its fail-safe empty answer, now for a *third* distinct reason.
+
+This one was caught from the actual GitHub Actions run logs, not from local
+testing — the local "bare runner" simulation used to verify the NIFTY
+snapshot only blanked out the price cache (`fetch.CACHE_DIR`), not
+`events.EVENTS_PATH`, so it kept silently reading the real local
+`data/events.parquet` and never exercised this path. The lesson kept: when
+simulating "what a bare checkout sees," isolate every path a committed-vs-
+gitignored artifact could resolve to, not just the one you're actively
+fixing — a real CI run is still the only fully faithful test.
+
+`data/events.parquet` (259KB, ~5,000 dividend events) is now committed
+alongside `data/grid/`. Its own fingerprint mismatch against the grid's
+`meta.json` is expected and harmless (it predates the specials-flag column;
+`study_specials.join_flags()` is the real integrity check, not the raw
+fingerprint — see `data/study_specials.py`). Refresh it with
+`python -m data.events` whenever the backtest is rerun, in the same commit
+as the other two.
 
 ## `make notify` — the manual / local path
 

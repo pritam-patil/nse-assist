@@ -16,7 +16,7 @@ from unittest import mock
 
 import pandas as pd
 
-from data import notify, paper, upcoming
+from data import events, fetch, notify, paper, upcoming
 
 SURVIVOR = {"cell": (20, 0), "n": 2158, "median_return": 0.0095,
             "p25": 0.0032, "p75": 0.0131, "hit_rate": 0.56,
@@ -94,6 +94,41 @@ class SurvivorDegradationTests(unittest.TestCase):
         with mock.patch.object(notify.signal.study_specials, "load_grid_trades",
                                side_effect=RuntimeError("no stored grid")):
             self.assertEqual(notify._survivors(), [])
+
+
+class RealCommittedArtifactsTests(unittest.TestCase):
+    """_survivors() against the ACTUAL files on disk — data/grid/,
+    data/events.parquet, data/nifty_snapshot.csv, unmocked — with only the
+    price cache isolated to an empty directory (the one thing genuinely
+    absent on a GitHub runner).
+
+    This is the test the earlier "bare runner" verification should have been
+    from the start: it caught a real bug that three rounds of mocked
+    unit tests (grid degradation, universe fallback, NIFTY fallback) each
+    missed individually, because each mocked away the exact file the OTHERS
+    still needed live. events.EVENTS_PATH was never isolated by any of those
+    tests, so a real GitHub Actions run — not review, not local testing —
+    is what surfaced study_grid.with_context() reading data/events.parquet
+    directly and finding nothing. If this test ever goes red, some future
+    change made one of the three committed artifacts inconsistent with the
+    others, or a fourth path was added without a fallback."""
+
+    def setUp(self):
+        self._cache = fetch.CACHE_DIR
+        fetch.CACHE_DIR = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        fetch.CACHE_DIR = self._cache
+
+    def test_survivors_compute_from_committed_files_alone(self):
+        # Not asserting WHAT the answer is (that's RESULTS.md's business and
+        # changes if the strategy is ever revalidated) — asserting that it is
+        # COMPUTED, not the fail-safe default from a missing file.
+        with mock.patch("builtins.print") as told:
+            survivors = notify._survivors()
+        text = "\n".join(str(call) for call in told.call_args_list)
+        self.assertNotIn("not loadable here", text)
+        self.assertIsInstance(survivors, list)
 
 
 class UniverseTests(unittest.TestCase):

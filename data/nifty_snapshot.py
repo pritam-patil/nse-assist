@@ -24,9 +24,12 @@ data/grid/'s trades and this snapshot must cover the same date range. If the
 backtest is ever rerun with a wider window and this snapshot is NOT refreshed
 alongside it, with_nifty() does not error — it silently DROPS every trade it
 cannot pair against a close. A runner would then compute a verdict from an
-incomplete slice of the new grid rather than fail loudly. Two commits, not
-one, every time the backtest is rerun: data/backtest.py's output AND this.
-See docs/notifications.md.
+incomplete slice of the new grid rather than fail loudly. THREE commits, not
+one, every time the backtest is rerun: data/backtest.py's output, this, AND
+data/events.parquet (study_grid.with_context() reads that directly for the
+yield/liquidity join — found from a real CI run, not local testing, because
+an earlier "bare runner" simulation only isolated the price cache and kept
+silently reading the real local events.parquet). See docs/notifications.md.
 """
 
 import argparse

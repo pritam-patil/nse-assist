@@ -12,9 +12,6 @@ cache/
 output/*
 !output/nse.db
 
-# Derived from data/cache by data/events.py — regenerated in seconds, not committed.
-data/events.parquet
-
 # Forward calendar snapshot from data/upcoming.py — refetched on demand.
 data/upcoming.parquet
 
