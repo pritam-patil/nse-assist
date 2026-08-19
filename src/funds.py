@@ -35,11 +35,25 @@ import requests
 from src import config, fund_watchlist
 from src.db import get_connection, init_db
 
-EXPECTED_FIELDS = 6
+# AMFI split "Scheme Name" into three columns (Scheme Name, Plan, Option) on or
+# shortly before 2026-08-19 without any version marker — the file has no schema
+# declaration, so there is nothing to check but the field count. Before, plan
+# and option were free text baked into the name ("XYZ Fund - Direct Plan -
+# Growth"); every row now carries them separately, and the old EXPECTED_FIELDS=6
+# meant every single row failed `len(fields) != EXPECTED_FIELDS` and was
+# silently dropped — not a crash, an empty parse. That surfaced three calls
+# away, as "none of the 6 watchlist schemes appear today", which is a much
+# harder trail to follow back to a header format change than a field-count
+# assertion at the parse site would have been. See tests/test_funds_parse.py,
+# built from a real captured dump, for the regression coverage this needed and
+# never had.
+EXPECTED_FIELDS = 8
 SCHEME_CODE_INDEX = 0
 NAME_INDEX = 3
-NAV_INDEX = 4
-DATE_INDEX = 5
+PLAN_INDEX = 4
+OPTION_INDEX = 5
+NAV_INDEX = 6
+DATE_INDEX = 7
 
 # AMFI writes dates as 01-Aug-2026; everything else in this DB is ISO.
 AMFI_DATE_FORMAT = "%d-%b-%Y"
@@ -109,6 +123,13 @@ def parse_dump(text, scheme_codes=None):
     Unparseable lines are skipped in silence: blank separators and headers are most
     of the file by line count, and a suspended scheme carries "N.A." where its NAV
     should be.
+
+    `name` is reassembled as "Scheme Name Plan Option" even though AMFI now ships
+    those as three separate columns, so search()'s "every word must appear in the
+    name" behaviour — matching "direct" or "growth" — keeps working exactly as it
+    did when AMFI shipped them pre-joined. A scheme with no plan/option text (seen
+    for at least one watchlist entry — the fields are simply empty) still ends up
+    with a clean single-spaced name rather than trailing blanks.
     """
     wanted = {str(c) for c in scheme_codes} if scheme_codes else None
     category = house = None
@@ -144,9 +165,13 @@ def parse_dump(text, scheme_codes=None):
         if nav <= 0:
             continue
 
+        name = " ".join(
+            part for part in (fields[NAME_INDEX], fields[PLAN_INDEX], fields[OPTION_INDEX])
+            if part
+        )
         out.append({
             "scheme_code": code,
-            "name": fields[NAME_INDEX],
+            "name": name,
             "category": category,
             "house": house,
             "nav": nav,
