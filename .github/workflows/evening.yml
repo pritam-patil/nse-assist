@@ -107,6 +107,7 @@ jobs:
           PY
 
       - name: Ingest prices, retrying once if the bhavcopy is late
+        id: ingest
         if: steps.calendar.outputs.trading == 'true'
         run: |
           set +e
@@ -121,15 +122,39 @@ jobs:
       # No holiday gate: fund NAVs do not follow the equity calendar. Liquid schemes
       # price on days the exchange is shut, so gating this would drop observations
       # for exactly the funds cash is parked in.
+      #
+      # DELIBERATELY ALLOWED TO FAIL WITHOUT BLOCKING WHAT FOLLOWS. Measured
+      # 2026-09-22: AMFI timed out for the one evening slot that fired that day
+      # (GitHub's own scheduling drift meant it was the only slot — see the
+      # THREE SLOTS comment above), and because this step had no `continue`
+      # story, Features/Signals/Journal/Deliver all silently skipped — the
+      # whole evening report was lost to a fund-NAV outage that had nothing to
+      # do with equity prices, which had ingested fine. Funds still fails
+      # loudly here (no continue-on-error, no `|| true` — this is a real
+      # problem worth the Telegram alert below), it just no longer gates the
+      # stages that never depended on it.
       - name: Ingest fund NAVs and refresh metrics
+        id: funds
         run: python main.py --stage funds
 
+      # always() + an explicit ingest check, not the bare calendar condition
+      # that used to sit here: GitHub Actions implicitly ANDs any `if:` with
+      # success() unless the expression itself opens with always()/failure()/
+      # etc, so `if: steps.calendar.outputs.trading == 'true'` alone silently
+      # means "AND nothing before this has failed" — which is what let the
+      # funds failure above cascade. ingest failing must still gate this
+      # (there is no signal to compute without today's prices); funds failing
+      # must not.
       - name: Features
-        if: steps.calendar.outputs.trading == 'true'
+        if: >
+          always() && steps.calendar.outputs.trading == 'true' &&
+          steps.ingest.outcome != 'failure'
         run: python main.py --stage features
 
       - name: Signals
-        if: steps.calendar.outputs.trading == 'true'
+        if: >
+          always() && steps.calendar.outputs.trading == 'true' &&
+          steps.ingest.outcome != 'failure'
         run: python main.py --stage signals
 
       # Observational only, and after assembly by design: it scores the candidates
@@ -137,15 +162,21 @@ jobs:
       # a rate-limited LLM must never cost the evening report — the stage already
       # swallows its own errors, and this is the belt to that pair of braces.
       - name: Sentiment (observational, non-blocking)
-        if: steps.calendar.outputs.trading == 'true'
+        if: >
+          always() && steps.calendar.outputs.trading == 'true' &&
+          steps.ingest.outcome != 'failure'
         run: python main.py --stage sentiment || true
 
       - name: Journal
-        if: steps.calendar.outputs.trading == 'true'
+        if: >
+          always() && steps.calendar.outputs.trading == 'true' &&
+          steps.ingest.outcome != 'failure'
         run: python main.py --stage journal
 
       - name: Deliver the evening report
-        if: steps.calendar.outputs.trading == 'true'
+        if: >
+          always() && steps.calendar.outputs.trading == 'true' &&
+          steps.ingest.outcome != 'failure'
         run: python main.py --stage deliver
 
       - name: Commit the state file
@@ -175,12 +206,31 @@ jobs:
 
       - name: Alert on failure
         if: failure()
+        env:
+          INGEST_OUTCOME: ${{ steps.ingest.outcome }}
+          FUNDS_OUTCOME: ${{ steps.funds.outcome }}
         run: |
+          # Which step actually failed changes both the severity and the fix —
+          # see the comment above the funds step. Distinguishing them here is
+          # what the 2026-09-22 incident was missing: a funds-only failure
+          # still delivers the real evening report, and a message implying
+          # otherwise trains you to ignore this alert.
+          if [ "$INGEST_OUTCOME" = "failure" ]; then
+            detail="Today's prices are missing. Ingest only fetches forward from the
+          stored watermark, so this needs a manual backfill rather than fixing itself
+          tomorrow. Nothing downstream ran — no signals, no report."
+          elif [ "$FUNDS_OUTCOME" = "failure" ]; then
+            detail="Only fund NAVs failed to update (AMFI unreachable or its format
+          changed again — check the step log). Prices, signals and the evening report
+          went out normally; this just means fund_navs/parked-cash metrics are stale
+          until the next successful run."
+          else
+            detail="Prices and NAVs both look fine — something later in the chain
+          broke (features, signals, journal or delivery). Check the run log."
+          fi
           curl -sS --max-time 20 \
             "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
             -d "chat_id=${TELEGRAM_CHAT_ID}" \
             --data-urlencode "text=nse-assist evening run FAILED.
           ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
-          Today's prices or NAVs may be missing. Ingest only fetches forward from the
-          stored watermark, so a gap here needs a manual backfill rather than fixing
-          itself tomorrow." > /dev/null
+          $detail" > /dev/null
