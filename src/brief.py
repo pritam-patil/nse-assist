@@ -241,14 +241,36 @@ def build_brief(conn, date=None):
     return "\n".join(lines)
 
 
-def run(dry_run=False, date=None, **kwargs):
+# Separate from deliver.py's DELIVERED_KEY: the brief and the evening report are
+# independent messages with independent "have I already sent this" questions, and
+# sharing one key would let one guard silently satisfy the other.
+BRIEF_DELIVERED_KEY = "last_delivered_brief_session"
+
+
+def run(dry_run=False, date=None, force=False, **kwargs):
+    """Send the morning brief, once per signal date however many scheduled slots
+    fire that morning.
+
+    morning.yml runs several slots for the same reason evening.yml does — GitHub's
+    `schedule` trigger is best-effort and unreliable at any single time — and
+    without this guard, every slot that fires would resend the identical brief.
+    `force` bypasses it for a manual re-send.
+    """
     conn = get_connection()
     try:
         init_db(conn)
+        signal_date, _ = enabled_signals(conn, date)
+        if not force and deliver.already_delivered(conn, signal_date, key=BRIEF_DELIVERED_KEY):
+            print(f"[brief] brief for {signal_date} already sent — skipping. "
+                  f"Use --force to send it again.")
+            return None
+
         message = build_brief(conn, date)
         # Plain text: the brief carries no markup, and HTML parse mode would make a
         # stray ampersand in a symbol name fail the send.
         deliver.send_message(message, dry_run=dry_run, parse_mode=None)
+        if not dry_run:
+            deliver.mark_delivered(conn, signal_date, key=BRIEF_DELIVERED_KEY)
         print(f"[brief] sent ({len(message)} chars)" if not dry_run else "[brief] dry run")
         return message
     finally:

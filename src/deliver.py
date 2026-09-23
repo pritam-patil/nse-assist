@@ -231,26 +231,31 @@ def build_report(conn, date):
 DELIVERED_KEY = "last_delivered_session"
 
 
-def already_delivered(conn, session):
+def already_delivered(conn, session, key=DELIVERED_KEY):
     """Has a report already gone out for this session?
 
-    The evening workflow is scheduled several times because GitHub drops scheduled
+    A workflow gets scheduled several times because GitHub drops scheduled
     events — measured on 2026-08-03, roughly 25 of 29 poll slots and the single
     evening slot produced nothing at all. Every stage in the chain is already
     idempotent, so re-running is free; the one thing that is not idempotent is your
-    attention. Three identical reports an hour apart is how the evening report
-    stops being read, which costs more than the missed run it was insuring against.
+    attention. Three identical reports an hour apart is how a report stops being
+    read, which costs more than the missed run it was insuring against.
+
+    `key` is the state key to check — the default is the evening report's own,
+    and any caller with independent delivery state (src/brief.py's morning brief,
+    which has its own key so the two guards cannot see or clobber each other)
+    passes its own.
     """
     from src.db import get_state
 
-    return session is not None and get_state(conn, DELIVERED_KEY) == session
+    return session is not None and get_state(conn, key) == session
 
 
-def mark_delivered(conn, session):
+def mark_delivered(conn, session, key=DELIVERED_KEY):
     from src.db import set_state
 
     if session:
-        set_state(conn, DELIVERED_KEY, session)
+        set_state(conn, key, session)
         conn.commit()
 
 

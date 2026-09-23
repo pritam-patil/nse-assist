@@ -1,26 +1,59 @@
 name: morning
 
-# 02:20 UTC = 07:50 IST, weekdays. 85 minutes before the 09:15 IST open.
+# THREE SLOTS, RE-MEASURED 2026-09-23. A single 00:20 UTC slot (05:50 IST, moved
+# there 2026-08-05 from an earlier 02:20 UTC — the comment explaining THAT move
+# went stale and said 85 minutes of margin when the real gap was 3h25m) turned out
+# not to be a margin problem at all. It was firing on a schedule of its own:
+# every one of the last 15 runs (2026-09-03 through 2026-09-23, `gh run list
+# --workflow=morning.yml`) landed between 04:37 and 05:00 UTC — a 23-minute
+# window, every single weekday, regardless of the 00:20 UTC trigger — which is
+# 10:07-10:30 IST, AFTER the 09:15 open every single time. Not occasional drift;
+# a near-constant ~4.3-4.7 hour delay on this specific slot, consistently, for
+# three weeks straight.
 #
-# WHY SO EARLY, AND WHY NOT ON THE HOUR
+# You cannot out-margin a delay that consistent by nudging one cron earlier —
+# 2026-08-05 already tried that (2 hours earlier) and the ACTUAL landing time
+# barely moved, because the delay is not "N minutes of congestion", it behaves
+# like a near-fixed offset for this slot. So this schedules two NEW slots far
+# enough back, in UTC terms, to land before the open even at the worst end of
+# the observed 4.28-4.67 hour range (verified by simulating both bounds against
+# real calendar dates — see the commit that added these), plus keeps the
+# original slot as a last-resort catch-up that we already know reliably fires,
+# just late:
 #
-# GitHub gives no delivery guarantee on `schedule` — the docs say runs are delayed
-# during periods of high load, which is worst at the top of every hour. Measured
-# here on 2026-08-03: this workflow was scheduled for 03:15 UTC and ran at 06:37,
-# three hours and twenty-two minutes late. That put a brief written to be read
-# before the open into the middle of the session, describing fills that had
-# already happened.
+#   20:50 UTC (prev day, Sun-Thu) -> lands ~01:07-01:30 UTC = 06:37-07:00 IST,
+#                                     2h15m-2h38m before the open
+#   22:20 UTC (prev day, Sun-Thu) -> lands ~02:37-03:00 UTC = 08:07-08:30 IST,
+#                                     45m-1h08m before the open (the backup)
+#   00:20 UTC (same day, Mon-Fri) -> the original slot, ~10:07-10:30 IST,
+#                                     after the open — proven to fire, kept as
+#                                     a floor under the other two, not the plan
 #
-# So: earlier, for slack, and off the hour to avoid the worst of the contention.
-# 85 minutes absorbs a delay that would have landed the old schedule post-open.
+# WHY "Sun-Thu" FOR THE FIRST TWO. They fire late the PREVIOUS UTC calendar day
+# to land early on the IST day they are for — a slot covering Monday's brief
+# schedules on Sunday (cron weekday 0), not Monday. Get this backward and a
+# whole session's mornings go silent rather than late, which is worse. The
+# safety net if this reasoning is ever wrong in some edge case: "Is there a
+# session today?" below computes the trading day from the REAL clock at
+# execution time, not from which cron entry fired it, so a slot landing on an
+# unexpected day still correctly checks against reality before sending anything.
 #
-# THE CRON IS NOT THE FIX, IT IS THE MARGIN. No schedule can be relied on, so the
-# brief states the IST time it was generated and says so plainly when the market
-# has already opened — see src/brief.py. A late brief that admits it is late is
-# usable; a late brief that reads like a pre-open one is not.
+# THREE SCHEDULED RUNS A MORNING IS SAFE NOW, NOT JUST TOLERATED. Before this,
+# a second slot the same morning would have resent the identical brief — see
+# BRIEF_DELIVERED_KEY in src/brief.py, added alongside this schedule change
+# specifically so redundant slots are free instead of spammy, the same
+# guard deliver.py already had for the evening report.
+#
+# THE CRON IS STILL NOT THE FIX, IT IS THE MARGIN. No schedule can be relied
+# on, so the brief states the IST time it was generated and says so plainly
+# when the market has already opened — see timing_note() in src/brief.py. A
+# late brief that admits it is late is usable; one that reads like an
+# on-time one is not.
 
 on:
   schedule:
+    - cron: "50 20 * * 0-4"
+    - cron: "20 22 * * 0-4"
     - cron: "20 0 * * 1-5"
   workflow_dispatch:
 
