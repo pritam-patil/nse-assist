@@ -292,6 +292,22 @@ class FallbackTests(unittest.TestCase):
         dead = {"name": "x", "status": None, "error": "boom", "rows": None}
         self.assertEqual(self._run(dead, dict(dead, name="y")), 1)
 
+    def test_an_empty_calendar_is_written_not_skipped(self):
+        """2026-10-06/07: nothing forthcoming for the universe, so run() returned
+        without writing, the gitignored file was absent on the runner, and the
+        digest sent four FAILED alerts for a quiet week. The empty answer must
+        also replace yesterday's file rather than leave it to be read as current."""
+        pd.DataFrame({"symbol": ["STALE"]}).to_parquet(upcoming.OUT_PATH, index=False)
+        actions = {"name": "corporate-actions", "status": 200, "error": None,
+                   "rows": [{"symbol": "NOTOURS", "subject": "Dividend - Rs 4 Per Share",
+                             "exDate": "12-Oct-2026", "recDate": "12-Oct-2026"}]}
+        announcements = {"name": "announcements", "status": 200, "error": None,
+                         "rows": []}
+        self.assertEqual(self._run(actions, announcements), 0)
+        table = pd.read_parquet(upcoming.OUT_PATH)
+        self.assertTrue(table.empty)
+        self.assertIn("ex_date", table.columns)
+
 
 class BareRunnerRegressionTests(unittest.TestCase):
     """The exact failure from the 2026-08-09 notify run: a bare GitHub

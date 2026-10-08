@@ -44,6 +44,14 @@ name: morning
 # specifically so redundant slots are free instead of spammy, the same
 # guard deliver.py already had for the evening report.
 #
+# A GUARD THAT LIVES IN THE DATABASE ONLY WORKS IF THE DATABASE IS COMMITTED.
+# This workflow originally had no commit step, so every slot started from a
+# checkout that had never heard of the previous one's send: measured 2026-10-07
+# and 2026-10-08, all three slots logged "[brief] sent", every morning. The
+# commit step below keeps the database only when the brief marker moved — the
+# same before/after test poll.yml uses for its offset — so a redundant slot
+# leaves no commit behind.
+#
 # THE CRON IS STILL NOT THE FIX, IT IS THE MARGIN. No schedule can be relied
 # on, so the brief states the IST time it was generated and says so plainly
 # when the market has already opened — see timing_note() in src/brief.py. A
@@ -64,6 +72,8 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     environment: prod
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -111,7 +121,40 @@ jobs:
 
       - name: Send the brief
         if: steps.calendar.outputs.trading == 'true'
-        run: python main.py --stage brief
+        run: |
+          marker() {
+            python -c "from src.brief import BRIEF_DELIVERED_KEY; \
+          from src.db import get_connection, get_state; \
+          print(get_state(get_connection(), BRIEF_DELIVERED_KEY))"
+          }
+          before=$(marker)
+          python main.py --stage brief
+          after=$(marker)
+
+          # Keep the database only if this slot is the one that sent. A slot that
+          # found the brief already sent still wrote run-log rows, and committing
+          # those three times a morning would record nothing but that it ran.
+          if [ "$before" = "$after" ]; then
+            echo "brief not sent by this slot — discarding the run-log churn"
+            git checkout -- output/nse.db
+          fi
+
+      - name: Commit the delivery marker
+        # always(): a brief that sent and then failed later in the step still
+        # needs its marker recorded, or the next slot sends it again.
+        if: always()
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if [ -f output/nse.db ]; then git add -f output/nse.db; fi
+          if git diff --quiet --cached; then
+            echo "no state change to record"
+            exit 0
+          fi
+          git commit -m "state: $(date -u +%Y-%m-%d) morning"
+          # Commit BEFORE pulling — --rebase refuses a dirty tree.
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
 
       - name: Alert on failure
         if: failure()

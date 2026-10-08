@@ -19,6 +19,7 @@ import main
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 EVENING = ROOT / ".github" / "workflows" / "evening.yml"
+MORNING = ROOT / ".github" / "workflows" / "morning.yml"
 
 # Runs as its own workflow step but deliberately outside ALL_STAGES: it is
 # observational, and it costs an LLM call per candidate with a rate-limit floor
@@ -85,6 +86,26 @@ class PipelineWiringTestCase(unittest.TestCase):
         for name in self.declared:
             with self.subTest(stage=name):
                 self.assertIn(name, main.STAGES)
+
+
+class StateWiringTestCase(unittest.TestCase):
+    """Guards whose state lives in the database, and the workflows that carry it.
+
+    Both of these passed every Python test while failing in production, because the
+    Python was right and the YAML around it was not.
+    """
+
+    def test_the_morning_workflow_commits_the_brief_marker(self):
+        """With no commit step, each slot started from a checkout that had never
+        seen the previous slot's send — three briefs a morning, 2026-10-07/08."""
+        text = MORNING.read_text()
+        self.assertIn("contents: write", text)
+        self.assertIn("BRIEF_DELIVERED_KEY", text)
+        self.assertIn('git push origin "HEAD:${GITHUB_REF_NAME}"', text)
+
+    def test_the_evening_gate_asks_about_the_session_it_follows(self):
+        """Not the IST date it lands on: a late Friday run is not a Saturday one."""
+        self.assertIn("health.evening_session_day()", EVENING.read_text())
 
 
 if __name__ == "__main__":

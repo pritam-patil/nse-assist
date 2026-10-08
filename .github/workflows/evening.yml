@@ -82,17 +82,18 @@ jobs:
             exit 1
           fi
 
-      - name: Was today a session?
+      - name: Was the session this run follows a trading day?
         id: calendar
         run: |
           python - <<'PY'
           import os, sys
-          from datetime import datetime, timedelta, timezone
-          from src import holidays_2026 as calendar
+          from src import health, holidays_2026 as calendar
 
-          # IST, not the runner's UTC. They agree at 14:00, but stating it stops a
-          # later schedule change from silently shifting the date.
-          day = (datetime.now(timezone.utc) + timedelta(hours=5, minutes=30)).date()
+          # The session this run FOLLOWS, not the IST date it lands on. Slots now
+          # land 5-8 hours late, often after midnight IST, and the landing date
+          # turned a late Friday run into a skipped "Saturday" (2026-08-28). See
+          # health.evening_session_day().
+          day = health.evening_session_day()
           try:
               trading = calendar.is_trading_day(day)
           except RuntimeError as exc:

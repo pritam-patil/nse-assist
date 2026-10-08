@@ -42,7 +42,7 @@ trades, and neither output would reveal it.
 """
 
 from collections import defaultdict
-from datetime import date
+from datetime import date, timedelta
 
 from src import costs, features, risk_config, rules_config, signals, universe
 from src.db import get_connection, init_db
@@ -65,24 +65,41 @@ BENCHMARK_TICKER = "^NSEI"
 
 
 def ensure_benchmark(conn, start=None, end=None):
-    """Fetch the index if it is missing. Best-effort: a missing baseline weakens the
-    report, it does not invalidate a single trade."""
-    stored = conn.execute(
-        "SELECT COUNT(*) FROM prices WHERE symbol = ?", (BENCHMARK_SYMBOL,)
-    ).fetchone()[0]
-    if stored:
-        return stored
+    """Bring the index up to the newest stored stock session. Best-effort: a missing
+    baseline weakens the report, it does not invalidate a single trade.
 
-    span = conn.execute("SELECT MIN(date), MAX(date) FROM prices").fetchone()
-    start = start or (span[0] if span else None)
+    FORWARD, NOT ONCE. This used to return as soon as any index row existed, so the
+    first fetch was also the last: the stored series stopped at 2026-07-30 and the
+    gate's against-the-index criterion read "no index data" for the whole paper
+    window that began four days later.
+
+    Capped at the newest STOCK session, never today. yfinance hands out a partial
+    bar for a session still trading, and an index bar with no stocks beside it
+    describes a day nothing else in the database has seen yet.
+    """
+    stored_through = conn.execute(
+        "SELECT MAX(date) FROM prices WHERE symbol = ?", (BENCHMARK_SYMBOL,)
+    ).fetchone()[0]
+    span = conn.execute(
+        "SELECT MIN(date), MAX(date) FROM prices WHERE symbol != ?", (BENCHMARK_SYMBOL,)
+    ).fetchone()
     end = end or (span[1] if span else None)
+    if stored_through:
+        if not end or stored_through >= end:
+            return 0
+        start = (date.fromisoformat(stored_through) + timedelta(days=1)).isoformat()
+    else:
+        start = start or (span[0] if span else None)
     if not start or not end:
         return 0
 
     try:
         import yfinance as yf
 
-        frame = yf.download([BENCHMARK_TICKER], start=start, end=end, interval="1d",
+        # yfinance's `end` is exclusive; without the extra day the newest session
+        # was never fetched.
+        until = (date.fromisoformat(end) + timedelta(days=1)).isoformat()
+        frame = yf.download([BENCHMARK_TICKER], start=start, end=until, interval="1d",
                             auto_adjust=True, actions=False, group_by="ticker",
                             progress=False, threads=False)
         series = frame[BENCHMARK_TICKER] if hasattr(frame.columns, "levels") else frame
@@ -91,7 +108,7 @@ def ensure_benchmark(conn, start=None, end=None):
              float(row["Open"]), float(row["High"]), float(row["Low"]),
              float(row["Close"]), int(row["Volume"] or 0), "yfinance-adj")
             for stamp, row in series.iterrows()
-            if row["Close"] == row["Close"]
+            if row["Close"] == row["Close"] and start <= stamp.date().isoformat() <= end
         ]
         conn.executemany(
             "INSERT OR REPLACE INTO prices "

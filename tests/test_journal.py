@@ -14,7 +14,7 @@ import tempfile
 import unittest
 
 from src import backtest, journal
-from src.db import get_connection, init_db
+from src.db import get_connection, get_state, init_db, set_state
 
 SYMBOL = "TESTCO"
 
@@ -207,6 +207,72 @@ class LedgerTestCase(unittest.TestCase):
             self.conn.execute(
                 "INSERT INTO paper_trades (signal_id, entry_date, entry_price, status) "
                 "VALUES (?,?,?,?)", (signal_id, "2026-01-02", 100.0, journal.TRADE_OPEN))
+
+    # --- sessions, not the clock ---
+
+    def _watermark(self, day):
+        set_state(self.conn, journal.SESSION_KEY, day)
+        self.conn.commit()
+
+    def test_a_session_the_evening_run_skipped_is_walked_on_the_next(self):
+        """2026-08-28, replayed. Both Friday slots landed on Saturday IST, the
+        calendar gate skipped them, and Monday's run walked only Monday: Thursday's
+        proposal filled at Monday's open and Friday's bar was never looked at.
+        Catch-up fills at Friday's open and books Friday's stop on Friday."""
+        self._prices([
+            bar("2026-08-27", 100.0, 101.0, 99.0, 100.0),   # Thursday: signal evening
+            bar("2026-08-28", 101.0, 102.0, 94.0, 95.5),    # Friday: fill, then the stop
+            bar("2026-08-31", 97.0, 99.0, 96.0, 98.0),      # Monday
+        ])
+        self._signal("2026-08-27")
+        self._watermark("2026-08-27")
+
+        days, _, _ = journal.catch_up(self.conn, symbols=(SYMBOL,))
+
+        self.assertEqual(days, ["2026-08-28", "2026-08-31"])
+        row = self.conn.execute(
+            "SELECT entry_date, entry_price, exit_date, exit_reason FROM paper_trades"
+        ).fetchone()
+        self.assertEqual(row["entry_date"], "2026-08-28")
+        self.assertEqual(row["entry_price"], 101.0, "Friday's open, not Monday's")
+        self.assertEqual(row["exit_date"], "2026-08-28")
+        self.assertEqual(row["exit_reason"], "stop")
+        self.assertEqual(get_state(self.conn, journal.SESSION_KEY), "2026-08-31")
+
+    def test_with_no_watermark_only_the_newest_session_is_pending(self):
+        """The first run after deploy must behave like the version it replaces,
+        not replay the whole price history into the ledger."""
+        self._prices([bar(d, 100.0, 101.0, 99.0, 100.0)
+                      for d in ("2026-01-01", "2026-01-02", "2026-01-05")])
+        self.assertEqual(journal.pending_sessions(self.conn, (SYMBOL,)), ["2026-01-05"])
+
+    def test_a_second_run_finds_nothing_pending(self):
+        self._prices([
+            bar("2026-01-01", 100.0, 101.0, 99.0, 100.0),
+            bar("2026-01-02", 100.5, 102.0, 99.5, 101.0),
+        ])
+        self._signal("2026-01-01")
+        self._watermark("2026-01-01")
+        first, _, _ = journal.catch_up(self.conn, symbols=(SYMBOL,))
+        again, _, _ = journal.catch_up(self.conn, symbols=(SYMBOL,))
+        self.assertEqual(first, ["2026-01-02"])
+        self.assertEqual(again, [])
+        self.assertEqual(
+            self.conn.execute("SELECT COUNT(*) FROM paper_trades").fetchone()[0], 1)
+
+    def test_walking_an_old_session_by_hand_never_rewinds_the_watermark(self):
+        self._prices([bar(d, 100.0, 101.0, 99.0, 100.0)
+                      for d in ("2026-01-01", "2026-01-02", "2026-01-05")])
+        self._watermark("2026-01-05")
+        journal.walk_session(self.conn, "2026-01-02")
+        self.assertEqual(get_state(self.conn, journal.SESSION_KEY), "2026-01-05")
+
+    def test_a_dry_run_does_not_move_the_watermark(self):
+        self._prices([bar(d, 100.0, 101.0, 99.0, 100.0)
+                      for d in ("2026-01-01", "2026-01-02")])
+        self._watermark("2026-01-01")
+        journal.catch_up(self.conn, symbols=(SYMBOL,), dry_run=True)
+        self.assertEqual(get_state(self.conn, journal.SESSION_KEY), "2026-01-01")
 
     # --- costs and reporting ---
 
