@@ -426,19 +426,37 @@ def _already_proposed(conn, date, symbol, rule):
     ).fetchone() is not None
 
 
+def _newest_bar_date(conn, symbols=None):
+    symbols = tuple(symbols or universe.UNIVERSE)
+    placeholders = ",".join("?" * len(symbols))
+    row = conn.execute(
+        f"SELECT MAX(date) FROM prices WHERE symbol IN ({placeholders})", symbols
+    ).fetchone()
+    return row[0] if row else None
+
+
 def run(dry_run=False, symbols=None, as_of=None, **kwargs):
     conn = get_connection()
     try:
         init_db(conn)
-        date = features._iso(as_of) if as_of else today()
+        # The session the scan computed on, never the wall clock. The runner's
+        # date is UTC and the evening slots land hours late: a Thursday scan that
+        # landed after 00:00 UTC used to be stamped Friday, which re-proposed
+        # Thursday's candidates under a new date (signals 81-83, 2026-08-28) — and
+        # a signal stamped a day late cannot fill until a session late.
+        session = (features._iso(as_of) if as_of
+                   else _newest_bar_date(conn, symbols) or today())
         result = propose(conn, as_of=as_of, symbols=symbols)
 
         print(f"[signals] rules: {', '.join(ENABLED_RULES)} / {', '.join(ENABLED_DIRECTIONS)}")
-        print(f"[signals] {result['evaluated']} symbol(s) evaluated as of {date}")
+        print(f"[signals] {result['evaluated']} symbol(s) evaluated as of {session}")
 
         written = 0
         stamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
         for candidate in result["candidates"]:
+            # Each candidate carries the bar it was computed from, which is the
+            # truest date it can have.
+            date = features._iso(candidate["date"]) if candidate.get("date") else session
             if _already_proposed(conn, date, candidate["symbol"], candidate["rule"]):
                 continue
             if not dry_run:

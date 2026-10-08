@@ -265,6 +265,10 @@ def digest(dry_run=False, today=None):
         return 1
 
     table = pd.read_parquet(upcoming.OUT_PATH)
+    if table.empty:
+        print("[notify] calendar is empty — nothing forthcoming for the universe, "
+              "not sending")
+        return 0
     rows = [row for _, row in table.iterrows()
             if _key(row) not in set(state.get("seen", []))]
     if not rows:

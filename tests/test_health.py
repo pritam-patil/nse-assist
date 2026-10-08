@@ -15,6 +15,7 @@ import unittest
 from datetime import datetime, timedelta
 
 from src import brief, deliver, funds, health, universe, weekly
+from src import holidays_2026 as calendar
 from src.db import get_connection, init_db
 
 # A Thursday inside the calendar's coverage, after the bhavcopy publication hour.
@@ -58,6 +59,36 @@ class FreshnessTestCase(unittest.TestCase):
     def test_a_weekend_expects_the_friday(self):
         sunday = datetime(2026, 8, 2, 19, 30)
         self.assertEqual(health.expected_session(sunday), "2026-07-31")
+
+    # --- which session an evening run is for ---
+
+    def test_a_friday_run_that_lands_after_midnight_is_still_friday(self):
+        """2026-08-28: both Friday slots landed at 03:08 and 04:30 IST Saturday, the
+        workflow asked the calendar about Saturday, and the session was skipped."""
+        for landed in (datetime(2026, 8, 29, 3, 8), datetime(2026, 8, 29, 4, 30)):
+            day = health.evening_session_day(landed)
+            self.assertEqual(day.isoformat(), "2026-08-28")
+            self.assertTrue(calendar.is_trading_day(day))
+
+    def test_an_on_time_run_is_for_its_own_day(self):
+        self.assertEqual(
+            health.evening_session_day(datetime(2026, 10, 9, 19, 30)).isoformat(),
+            "2026-10-09")
+
+    def test_the_day_turns_at_the_close_not_at_midnight(self):
+        self.assertEqual(
+            health.evening_session_day(datetime(2026, 10, 9, 15, 29)).isoformat(),
+            "2026-10-08")
+        self.assertEqual(
+            health.evening_session_day(datetime(2026, 10, 9, 15, 30)).isoformat(),
+            "2026-10-09")
+
+    def test_a_late_run_after_a_holiday_still_skips_it(self):
+        """The gate must keep skipping real non-sessions. 2026-10-02 was Gandhi
+        Jayanti and its last slot landed at 01:26 IST the next morning."""
+        day = health.evening_session_day(datetime(2026, 10, 3, 1, 26))
+        self.assertEqual(day.isoformat(), "2026-10-02")
+        self.assertFalse(calendar.is_trading_day(day))
 
     # --- staleness ---
 

@@ -86,6 +86,31 @@ def expected_session(now=None):
     return None
 
 
+# The close, in IST. An evening run belongs to the session whose close it most
+# recently followed — see evening_session_day().
+MARKET_CLOSE_IST = timedelta(hours=15, minutes=30)
+
+
+def evening_session_day(now=None):
+    """The day an evening run is FOR, which is not always the day it lands on.
+
+    GitHub's schedule delay on the evening slots grew to 5-8 hours by October
+    2026, so a run meant for 19:30 IST routinely lands after midnight IST. Asking
+    the calendar about the landing date turns a late Friday run into a Saturday
+    one and the whole Friday session is skipped — no report, no scan, and the
+    journal never walks that bar. Measured 2026-08-28: both Friday slots landed
+    at 03:08 and 04:30 IST Saturday, and Thursday's proposals filled at Monday's
+    open instead of Friday's.
+
+    Shifting back by the close asks the right question: anything from 15:30 IST
+    on day D up to 15:29 IST on D+1 is evening work for D. The result is a plain
+    date — possibly a weekend or holiday — that the caller hands to the calendar,
+    exactly as before.
+    """
+    now = now or _ist_now()
+    return (now - MARKET_CLOSE_IST).date()
+
+
 def sessions_between(start, end):
     """Trading sessions strictly after `start`, up to and including `end`."""
     if not start or not end:

@@ -265,6 +265,13 @@ class DigestRunTests(StatefulTestCase):
             self.assertEqual(notify.digest(today="2026-08-10"), 0)   # nothing new
         self.assertEqual(len(sent), 1)
 
+    def test_an_empty_calendar_is_a_quiet_day_not_a_failure(self):
+        sent = []
+        empty = upcoming.build_table([], [], {}, None)
+        with self._env([], empty, lambda text, dry_run=False: sent.append(text) or True):
+            self.assertEqual(notify.digest(today="2026-10-07"), 0)
+        self.assertEqual(sent, [])
+
 
 class AlertTests(StatefulTestCase):
     def _urgent_table(self, count):

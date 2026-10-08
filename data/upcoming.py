@@ -309,8 +309,16 @@ def run():
     context = cache_context({row["symbol"] for row in rows})
     table = build_table(rows, universe, context, liquidity_cutoffs(context))
     if table.empty:
+        # WRITTEN, not skipped. An empty calendar is a successful fetch with a
+        # real answer, and the file is how notify.py hears it. Returning early
+        # left a bare runner with no file at all (it is gitignored), so the
+        # digest step exited 1 and sent a FAILED alert for a quiet week — four
+        # in a row on 2026-10-06/07. On a laptop it was worse: yesterday's file
+        # survived, and the digest would have read stale rows as current.
+        table.to_parquet(OUT_PATH, index=False)
         print(f"[upcoming] {len(rows)} dividend row(s) fetched, none in the "
-              f"backtested universe — nothing forthcoming for our symbols")
+              f"backtested universe — nothing forthcoming for our symbols "
+              f"(empty calendar written to {OUT_PATH})")
         return 0
 
     _print_table(table)

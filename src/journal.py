@@ -34,8 +34,8 @@ can be raced, and only rows with status='open' are ever walked.
 
 from datetime import date
 
-from src import backtest, costs, ledger, risk_config
-from src.db import get_connection, init_db
+from src import backtest, costs, health, ledger, risk_config, universe
+from src.db import get_connection, get_state, init_db, set_state
 from src.runlog import today
 
 STATUS_PROPOSED = "proposed"
@@ -270,37 +270,105 @@ def evaluation_days(conn):
 # --- stage --------------------------------------------------------------------
 
 
+# The newest session the ledger has walked. Keyed on the SESSION, like deliver.py's
+# report guard, because the wall clock is the wrong question twice over: the
+# runner's date is UTC, and the evening slots land hours late. A run that fell on
+# the wrong side of midnight used to walk a day with no bars and never come back for
+# the one it missed; a session the calendar gate skipped (2026-08-28, a Friday) was
+# never walked at all.
+SESSION_KEY = "journal_last_session"
+
+
+def pending_sessions(conn, symbols=None):
+    """Sessions with bars the ledger has not walked yet, oldest first.
+
+    Bounded above by health.data_through() — the newest session complete enough
+    to trust, the same date the evening report names — so a thin session waits
+    for its missing bars instead of being walked without them.
+
+    With no watermark yet (the first run after this existed) only the newest
+    session is pending, which is exactly what the wall-clock version did.
+    """
+    symbols = tuple(symbols or universe.UNIVERSE)
+    through, _ = health.data_through(conn, symbols)
+    if not through:
+        return []
+    last = get_state(conn, SESSION_KEY)
+    if not last:
+        return [through]
+    placeholders = ",".join("?" * len(symbols))
+    return [
+        row[0] for row in conn.execute(
+            f"SELECT DISTINCT date FROM prices WHERE symbol IN ({placeholders}) "
+            "AND date > ? AND date <= ? ORDER BY date",
+            [*symbols, last, through],
+        )
+    ]
+
+
+def walk_session(conn, day, dry_run=False):
+    """One session's ledger work: exits on its bar, fills at its open, then the
+    entry-day walk. Returns (closed, filled)."""
+    closed, _ = walk_open(conn, day, dry_run=dry_run)
+    for symbol, rule, reason, net, held in closed:
+        print(f"[journal] {day} closed {symbol:<12} {rule:<22} {reason:<7} "
+              f"{net:>10,.0f} after {held} session(s)")
+
+    done, why = day_is_done(conn, day)
+    if done:
+        print(f"[journal] {day} no new fills — {why}")
+        filled = []
+    else:
+        filled, skipped = fill_proposed(conn, day, dry_run=dry_run)
+        for symbol, rule, fill, size in filled:
+            print(f"[journal] {day} opened {symbol:<12} {rule:<22} @ {fill:>9.2f} x{size}")
+        for symbol, reason in skipped:
+            print(f"[journal] {day} skipped {symbol:<12} {reason}")
+
+    # Positions opened just now are tested against today's bar too, so a signal
+    # that gaps to its stop on entry day resolves tonight — which is what the
+    # backtest does on its own fill bar.
+    if filled:
+        same_day, _ = walk_open(conn, day, dry_run=dry_run)
+        for symbol, rule, reason, net, held in same_day:
+            print(f"[journal] {day} closed {symbol:<12} {rule:<22} {reason:<7} "
+                  f"{net:>10,.0f} on entry day")
+        closed += same_day
+
+    if not dry_run and day > (get_state(conn, SESSION_KEY) or ""):
+        set_state(conn, SESSION_KEY, day)
+        conn.commit()
+    return closed, filled
+
+
+def catch_up(conn, symbols=None, dry_run=False):
+    """Walk every pending session in order. Returns (sessions, closed, filled)."""
+    days = pending_sessions(conn, symbols)
+    if len(days) > 1:
+        print(f"[journal] catching up {len(days)} session(s): {days[0]} to {days[-1]}")
+    closed, filled = [], []
+    for day in days:
+        day_closed, day_filled = walk_session(conn, day, dry_run=dry_run)
+        closed += day_closed
+        filled += day_filled
+    return days, closed, filled
+
+
 def run(dry_run=False, date=None, **kwargs):
-    day = date or today()
+    """Walk the ledger forward. `date` walks exactly that session instead — the
+    manual override — and never moves the watermark backwards."""
     conn = get_connection()
     try:
         init_db(conn)
 
-        closed, _ = walk_open(conn, day, dry_run=dry_run)
-        for symbol, rule, reason, net, held in closed:
-            print(f"[journal] closed {symbol:<12} {rule:<22} {reason:<7} "
-                  f"{net:>10,.0f} after {held} session(s)")
-
-        done, why = day_is_done(conn, day)
-        if done:
-            print(f"[journal] no new fills — {why}")
-            filled = []
+        if date:
+            days = [date]
+            closed, filled = walk_session(conn, date, dry_run=dry_run)
         else:
-            filled, skipped = fill_proposed(conn, day, dry_run=dry_run)
-            for symbol, rule, fill, size in filled:
-                print(f"[journal] opened {symbol:<12} {rule:<22} @ {fill:>9.2f} x{size}")
-            for symbol, reason in skipped:
-                print(f"[journal] skipped {symbol:<12} {reason}")
-
-        # Positions opened just now are tested against today's bar too, so a signal
-        # that gaps to its stop on entry day resolves tonight — which is what the
-        # backtest does on its own fill bar.
-        if filled:
-            same_day, _ = walk_open(conn, day, dry_run=dry_run)
-            for symbol, rule, reason, net, held in same_day:
-                print(f"[journal] closed {symbol:<12} {rule:<22} {reason:<7} "
-                      f"{net:>10,.0f} on entry day")
-            closed += same_day
+            days, closed, filled = catch_up(conn, dry_run=dry_run)
+        if not days:
+            print(f"[journal] nothing new to walk — ledger is current through "
+                  f"{get_state(conn, SESSION_KEY)}")
 
         stats = summary(conn)
         suffix = " (dry run, nothing written)" if dry_run else ""
